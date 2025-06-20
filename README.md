@@ -1,4 +1,4 @@
-# SideWalker
+<!-- # SideWalker
 
 ![](assets/sidewalker.png)
 
@@ -7,14 +7,10 @@ Robot_navigation : based on Imitation Learning, Reinforcement Learning
 We implement robot navigation environment using MetaUrban 
 
 [MetaUrban Project](https://metadriverse.github.io/metaurban/)
+ -->
 
+<!-- # Installation  -->
 
-# Installation 
-
-아래는 요청하신 내용을 반영해 작성한 **README.md** 예시입니다.
-실제 프로젝트 성격과 기술 스택에 맞게 추가/수정 가능합니다.
-
----
 
 # SideWalker
 
