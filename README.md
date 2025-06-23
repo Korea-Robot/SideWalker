@@ -41,6 +41,18 @@ sidewalker/
 ├── README.md
 └── ...
 ```
+
+## Quick Start
+
+#### Train with single processor
+```python
+python3 -m scripts.core
+```
+
+#### Validation with Visualization
+```python
+python3 -m scripts.core_viz
+```
 <!-- 
 ## Quick Start
 

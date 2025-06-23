@@ -1,3 +1,10 @@
+# pt files and checkoints
+checkpoints/
+
+*.pt
+*.pth
+./scripts/minimal_ppo.py
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
