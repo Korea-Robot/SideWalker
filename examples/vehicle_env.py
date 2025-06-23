@@ -4,11 +4,16 @@ Remember to press H to see help message!
 
 Note: This script require rendering, please following the installation instruction to setup a proper
 environment that allows popping up an window.
+
+코드 분석
 """
 from metaurban import SidewalkStaticMetaUrbanEnv
+import numpy as np
 # reload agent
 class VehicleSidewalkStaticMetaUrbanEnv(SidewalkStaticMetaUrbanEnv):
-    @staticmethod
+    
+    # 차량이 목적이에 도달했는지 판단
+    @staticmethod # self가 없음.
     def _is_arrive_destination(vehicle):
         """
         Args:
@@ -17,6 +22,7 @@ class VehicleSidewalkStaticMetaUrbanEnv(SidewalkStaticMetaUrbanEnv):
         Returns:
             flag: Whether this vehicle arrives its destination.
         """
+        
         long, lat = vehicle.navigation.final_lane.local_coordinates(vehicle.position)
         flag = (vehicle.navigation.final_lane.length - 5 < long < vehicle.navigation.final_lane.length + 5) and (
             vehicle.navigation.get_current_lane_width() / 2 >= lat >=
@@ -87,6 +93,24 @@ class VehicleSidewalkStaticMetaUrbanEnv(SidewalkStaticMetaUrbanEnv):
         from metaurban.manager.agent_manager import VehicleAgentManager
         return VehicleAgentManager(init_observations=self._get_observations())
 
+import math 
+import numpy as np 
+def calc_action(vehicle, target_pos, max_steer=np.deg2rad(30), max_accel=1.0):
+    pos = np.array(vehicle.position[:2])
+    x,y = vehicle.heading
+    heading = math.atan2(y,x)
+    vec_to_goal = np.array(target_pos) - pos
+    dist_to_goal = np.linalg.norm(vec_to_goal)
+    desired_angle = np.arctan2(vec_to_goal[1], vec_to_goal[0])
+    angle_diff = desired_angle - heading
+    angle_diff = (angle_diff + np.pi) % (2 * np.pi) - np.pi
+    steer = np.clip(angle_diff, -max_steer, max_steer) / max_steer
+    accel = np.clip(dist_to_goal / 10.0, 0.1, max_accel)
+    # 반드시 float 변환!
+    # breakpoint()
+    return [float(steer), float(accel)]
+
+
 from metaurban.constants import HELP_MESSAGE
 import cv2
 import numpy as np
@@ -128,7 +152,7 @@ if __name__ == "__main__":
         walk_on_all_regions=False,
         use_render=True,
         map=map_type,
-        manual_control=True,
+        manual_control=False,
         drivable_area_extension=55,
         height_scale=1,
         show_mid_block_map=False,
@@ -175,13 +199,21 @@ if __name__ == "__main__":
     env = VehicleSidewalkStaticMetaUrbanEnv(config)
     o, _ = env.reset(seed=2)
     # env.engine.toggleDebug()
+    goal_x,goal_y = 10,10
+    target_pos = env.vehicle.navigation.final_lane.end  # 목적지 좌표
+
+    target_pos = [goal_x, goal_y]
 
     try:
         print(HELP_MESSAGE)
         for i in range(1, 1000000000):
-
-            o, r, tm, tc, info = env.step([0., 0.0])  ### reset; get next -> empty -> have multiple end points
-
+            vehicle = env.vehicle  
+            action = calc_action(vehicle,target_pos)
+            # breakpoint()
+            
+            # o, reward, tm, tc, info = env.step([0., 0.0])  ### reset; get next -> empty -> have multiple end points
+            o, reward, tm, tc, info = env.step(action)
+            
             if (tm or tc):
                 env.reset(env.current_seed + 1)
     finally:
