@@ -40,24 +40,24 @@ pdf_e  = weights[2] * (1.0/(expl_high - expl_low)) * ((x>=expl_low) & (x<=expl_h
 
 pdf_mix = pdf_p + pdf_pr + pdf_e
 
-# --- 시각화 ---
-plt.figure(figsize=(12,7))
-# 히스토그램 (토치 → 넘파이 변환)
-plt.hist(samples.numpy(), bins=200, density=True, alpha=0.3, label='Samples')
-# 개별 분포 곡선
-plt.plot(x.numpy(), pdf_p.numpy(),  '--', linewidth=2, label='Policy (Gaussian)')
-plt.plot(x.numpy(), pdf_pr.numpy(), '--', linewidth=2, label='Prior (Gaussian)')
-plt.plot(x.numpy(), pdf_e.numpy(),  '--', linewidth=2, label='Exploration (Uniform)')
-# 혼합 분포
-plt.plot(x.numpy(), pdf_mix.numpy(), '-',  linewidth=3, label='Mixture')
+# # --- 시각화 ---
+# plt.figure(figsize=(12,7))
+# # 히스토그램 (토치 → 넘파이 변환)
+# plt.hist(samples.numpy(), bins=200, density=True, alpha=0.3, label='Samples')
+# # 개별 분포 곡선
+# plt.plot(x.numpy(), pdf_p.numpy(),  '--', linewidth=2, label='Policy (Gaussian)')
+# plt.plot(x.numpy(), pdf_pr.numpy(), '--', linewidth=2, label='Prior (Gaussian)')
+# plt.plot(x.numpy(), pdf_e.numpy(),  '--', linewidth=2, label='Exploration (Uniform)')
+# # 혼합 분포
+# plt.plot(x.numpy(), pdf_mix.numpy(), '-',  linewidth=3, label='Mixture')
 
-plt.title("Mixture Distribution Visualization", fontsize=16)
-plt.xlabel("Action value", fontsize=14)
-plt.ylabel("Density", fontsize=14)
-plt.legend(fontsize=12)
-plt.grid(True)
-plt.savefig("Distribution_Mixture_torch.png")
-plt.show()
+# plt.title("Mixture Distribution Visualization", fontsize=16)
+# plt.xlabel("Action value", fontsize=14)
+# plt.ylabel("Density", fontsize=14)
+# plt.legend(fontsize=12)
+# plt.grid(True)
+# plt.savefig("Distribution_Mixture_torch.png")
+# plt.show()
 
 # --- 로그 확률 계산 함수 ---
 def mixture_log_prob(a):
