@@ -28,25 +28,48 @@ from stable_baselines3.common.monitor import Monitor
 
 from panda3d.core import LineSegs, NodePath, Vec4
 
-def draw_goal_marker_at_2d_position(position_2d, engine, z=0.1, size=1.5, color=Vec4(0.5, 0, 0.5, 1), thickness=6.0):
+
+def draw_goal_marker_from_agent(offset, agent_node, engine, size=1.0, color=Vec4(1, 0, 0, 1)):
     """
-    월드 좌표계 기준 2차원 goal 위치에 십자형 마커를 그립니다.
-    
-    Args:
-        position_2d (tuple or list): [x, y] 형식의 좌표
-        engine: env.engine
-        z (float): 고도 값 (기본 0.1로 살짝 띄움)
-        size (float): 마커의 가로세로 길이
-        color (Vec4): RGB 색상 (자주색 예: Vec4(0.5, 0, 0.5, 1))
-        thickness (float): 선 두께
-    Returns:
-        NodePath: 마커 노드 (필요 시 .remove_node()로 제거 가능)
+    에이전트 기준 상대 좌표에 goal marker 표시.
+    - offset: [x, y, z] 형식 (agent local frame 기준)
+    - agent_node: 일반적으로 env.agent.origin
+    """
+    lines = LineSegs()
+    lines.set_thickness(3.0)
+    lines.set_color(color)
+
+    x, y, z = offset
+    dx = size * 0.5
+
+    lines.move_to(x - dx, y, z)
+    lines.draw_to(x + dx, y, z)
+    lines.move_to(x, y - dx, z)
+    lines.draw_to(x, y + dx, z)
+
+    node = lines.create()
+    np = NodePath(node)
+
+    # agent 기준으로 marker 부착 (agent local frame에서 위치가 유지됨)
+    np.reparent_to(agent_node)
+    return np
+
+from panda3d.core import LineSegs, NodePath, Vec4, TransparencyAttrib
+
+def draw_goal_marker_from_agent(offset, agent_node, engine, size=1.5, color=Vec4(1, 0, 0, 1), thickness=8.0):
+    """
+    에이전트 기준 상대 위치에 진한 Goal Marker를 시각화합니다.
+    - offset: [x, y, z] 상대 위치
+    - agent_node: 일반적으로 env.agent.origin
+    - size: 마커의 크기 (단위: meter)
+    - color: Vec4(R, G, B, A) 형식 (1.0 기준)
+    - thickness: 선 두께 (기본: 8.0)
     """
     lines = LineSegs()
     lines.set_thickness(thickness)
     lines.set_color(color)
 
-    x, y = position_2d
+    x, y, z = offset
     dx = size * 0.5
 
     # 십자 표시
@@ -57,13 +80,17 @@ def draw_goal_marker_at_2d_position(position_2d, engine, z=0.1, size=1.5, color=
 
     node = lines.create()
     np = NodePath(node)
-    np.set_color(color)
-    np.reparent_to(engine.render)
+
+    # 투명도 속성 설정 및 강조
+    np.set_transparency(TransparencyAttrib.MAlpha)
+    np.set_color_scale(color)
+
+    # 에이전트 기준 위치에 배치
+    np.reparent_to(agent_node)
 
     return np
 
-    
-# make metadrive_env
+
 def make_metadrive_env_fn(env_cfg):
     env = SidewalkStaticMetaUrbanEnv(dict(
         log_level=50,
@@ -77,15 +104,13 @@ import math
 import torch.nn as nn
 import torch
 
-#  정규 분포 생성 ,log-Likelihood, 
+
 def normal_log_density(x, mean, log_std, std):
     var = std.pow(2)
     log_density = -(x - mean).pow(2) / (2 * var) - 0.5 * math.log(2 * math.pi) - log_std
     return log_density.sum(1, keepdim=True)
 
 
-
-# policy 와 action에 대해 가각 나눠섯 적용
 class Policy(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_size=(128, 256, 128), activation='tanh', log_std=0):
         super().__init__()
@@ -137,8 +162,6 @@ class Policy(nn.Module):
         action_mean, action_log_std, action_std = self.forward(x)
         return normal_log_density(actions, action_mean, action_log_std, action_std)
 
-    
-    # get fisher information  : natural policy gradietn 할떄 사용
     def get_fim(self, x):
         mean, _, _ = self.forward(x)
         cov_inv = self.action_log_std.exp().pow(-2).squeeze(0).repeat(x.size(0))
@@ -154,8 +177,6 @@ class Policy(nn.Module):
         return cov_inv.detach(), mean, {'std_id': std_id, 'std_index': std_index}
 
 
-
-## vlaue narutal policy 
 class Value(nn.Module):
     def __init__(self, state_dim, hidden_size=(128, 128), activation='tanh'):
         super().__init__()
@@ -202,14 +223,11 @@ Fork	        WIP
 """
 
 if __name__ == "__main__":
-    map_type = 'X' # 맵타입을 정할 수 있음.
+    map_type = 'X'
     den_scale = 1
-    
-    # 각각 시뮬레이터에 해당하는config 값을 확인
     config = dict(
         crswalk_density=1,
         object_density=0.7,
-        # use_render=False,
         use_render=True,
         walk_on_all_regions=False,
         map=map_type,
@@ -221,13 +239,13 @@ if __name__ == "__main__":
         show_ego_navigation=False,
         debug=False,
         horizon=300,
-        on_continuous_line_done=False,
+        on_continuous_line_done=True,
         out_of_route_done=True,
         vehicle_config=dict(
             show_lidar=False,
             show_navi_mark=True,
-            show_line_to_navi_mark=False,
-            show_dest_mark=False,
+            show_line_to_navi_mark=True,
+            show_dest_mark=True,
             enable_reverse=True,
             policy_reverse=False,
         ),
@@ -241,9 +259,7 @@ if __name__ == "__main__":
         relax_out_of_road_done=True,
         max_lateral_dist=15.0,
         
-        
-        #  agent 주체 
-        agent_type='wheelchair', #['coco', 'wheelchair']
+        agent_type='coco', #['coco', 'wheelchair']
         
         spawn_human_num=int(20 * den_scale),
         spawn_wheelchairman_num=int(1 * den_scale),
@@ -252,12 +268,10 @@ if __name__ == "__main__":
         spawn_drobot_num=int(1 * den_scale),
         max_actor_num=20,
     )
-    
-    #argpaerse 
     parser = argparse.ArgumentParser()
     parser.add_argument("--observation", type=str, default="lidar", choices=["lidar", 'all'])
     parser.add_argument("--out_dir", type=str, default="saved_imgs")
-    parser.add_argument("--save_img", default=True,action="store_true")
+    parser.add_argument("--save_img", action="store_true")
     args = parser.parse_args()
 
     if args.observation == "all" or args.save_img:
@@ -274,12 +288,9 @@ if __name__ == "__main__":
     if args.save_img:
         os.makedirs(args.out_dir, exist_ok=True)
 
-    
-    # how to get multi envs
     env = SidewalkStaticMetaUrbanEnv(config)
     o, _ = env.reset(seed=20)
 
-    # 아래는 PPO 하이퍼 파라미터임.
     algo_config = dict(
         learning_rate=5e-5,
         n_steps=200,
@@ -293,64 +304,49 @@ if __name__ == "__main__":
         tensorboard_log="./metaurban_ppo-single_scenario_per_process_1e8-tb_logs/",
     )
     env_fn = make_metadrive_env_fn
-    
     expert = PPO(
         "MlpPolicy",
         env,
         **algo_config,
     )
-    
-    
-    
     load_path_or_dict = './pretrained_policy_576k'
+    load_path_or_dict = './best_model'
     from stable_baselines3.common.save_util import load_from_zip_file, recursive_getattr, recursive_setattr, save_to_zip_file
-    
-    # _, params, _ = load_from_zip_file(load_path_or_dict, device='cpu', load_data=False)
-    # expert.set_parameters(params, exact_match=True, device='cpu')
+    _, params, _ = load_from_zip_file(load_path_or_dict, device='cpu', load_data=False)
+    expert.set_parameters(params, exact_match=True, device='cpu')
     action = [0., 0.]
     scenario_t = 0
     start_t = 20
-    goal_pos = env.agent.navigation.reference_trajectory.end  # [x, y]
-    goal_marker = draw_goal_marker_at_2d_position(goal_pos, env.engine, z=0.1, size=2.0)
-    
-    
+    # 에이전트 기준 앞쪽 10m 위치에 진한 붉은색 마커
+    goal_offset = [0, 10, 0.1]
+    draw_goal_marker_from_agent(
+        offset=goal_offset,
+        agent_node=env.agent.origin,
+        engine=env.engine,
+        size=2.0,
+        color=Vec4(1, 0, 0, 1),        # 진한 빨강 (R=1, G=0, B=0)
+        thickness=10.0                # 선 두께 증가
+    )
+
+
     try:
         print(HELP_MESSAGE)
         for i in range(1, 1000000000):
-            
-            
-            
-            # 여기서 사용하고 있던 obs는 라이다 였음
-            o, r, tm, tc, info = env.step(action)  ### reset; get next -> empty -> have multiple end points
 
-            # action = expert.predict(torch.from_numpy(o).reshape(1, 271))[0]  #.detach().numpy()
-            # action = np.clip(action, a_min=-1, a_max=1.)
-            # action = action[0].tolist()
-            action = env.action_space.sample()
+            # goal_offset = [0, 10, 0.1]  # agent 앞쪽 10m 지점
+            # draw_goal_marker_from_agent(goal_offset, env.agent.origin, env.engine, size=2.0)
+            o, r, tm, tc, info = env.step(action)  ### reset; get next -> empty -> have multiple end points
             
+                        
+            action = expert.predict(torch.from_numpy(o).reshape(1, 271))[0]  #.detach().numpy()
+            action = np.clip(action, a_min=-1, a_max=1.)
+            action = action[0].tolist()
             
-            action = action.tolist()
-            action.append(0.0)
-            action[2] = action[1]
-            
-            # breakpoint()
-            
-            # if args.save_img and scenario_t >= start_t:
-            
-            # 기존 카메라 포지션 
-            
-            # 왼쪽, 오른쪽?(+) 뒤, 위(+) 아래
-            camera_position = [0., -1.7 ,4.]
-            
-            # camera_position = [0., 1.,1.]
-            camera_position = [0,-5,0]
-            
-            
-            if args.save_img:
+            if args.save_img and scenario_t >= start_t:
                 # ===== Prepare input =====
                 camera = env.engine.get_sensor("rgb_camera")
                 rgb_front = camera.perceive(
-                    to_float=config['norm_pixel'], new_parent_node=env.agent.origin, position=camera_position,hpr=[0, 0, 0]
+                    to_float=config['norm_pixel'], new_parent_node=env.agent.origin, position=[0, -7, 1.0], hpr=[0, 0, 0]
                 )
                 max_rgb_value = rgb_front.max()
                 rgb = rgb_front[..., ::-1]
@@ -361,7 +357,7 @@ if __name__ == "__main__":
 
                 camera = env.engine.get_sensor("depth_camera")
                 depth_front = camera.perceive(
-                    to_float=config['norm_pixel'], new_parent_node=env.agent.origin, position=camera_position,hpr=[0, 0, 0]
+                    to_float=config['norm_pixel'], new_parent_node=env.agent.origin, position=[0, -7, 1.0], hpr=[0, 0, 0]
                 ).reshape(576, 1024, -1)[..., -1]
                 depth = depth_front
                 depth_normalized = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
@@ -371,7 +367,7 @@ if __name__ == "__main__":
 
                 camera = env.engine.get_sensor("semantic_camera")
                 semantic_front = camera.perceive(
-                    to_float=config['norm_pixel'], new_parent_node=env.agent.origin, position=camera_position,hpr=[0, 0, 0]
+                    to_float=config['norm_pixel'], new_parent_node=env.agent.origin, position=[0, -7, 1.0], hpr=[0, 0, 0]
                 )
                 max_rgb_value = semantic_front.max()
                 semantic = semantic_front
@@ -385,10 +381,9 @@ if __name__ == "__main__":
                 cv2.imwrite(os.path.join(args.out_dir, f"seed_{env.current_seed:06d}_time_{scenario_t-start_t:06d}_semantic.png"), semantic[..., ::-1])
                 cv2.imwrite(os.path.join(args.out_dir, f"seed_{env.current_seed:06d}_time_{scenario_t-start_t:06d}_depth_colored.png"), depth_colored[..., ::-1])
                 cv2.imwrite(os.path.join(args.out_dir, f"seed_{env.current_seed:06d}_time_{scenario_t-start_t:06d}_depth_raw.png"), depth_img[..., ::-1])
-                
-                # breakpoint()
+            
             scenario_t += 1
-
+             
             if (tm or tc):
                 env.reset(env.current_seed + 10)
                 action = [0., 0.]

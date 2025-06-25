@@ -3,7 +3,11 @@ checkpoints/
 
 *.pt
 *.pth
-./scripts/minimal_ppo.py
+
+scripts/minimal_ppo.py
+gpt_images/
+*.avi
+*.zip
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
