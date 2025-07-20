@@ -16,7 +16,8 @@ from metaurban.component.sensors.rgb_camera import RGBCamera
 from metaurban.component.sensors.semantic_camera import SemanticCamera
 
 # --- 환경 설정 ---
-SENSOR_SIZE = (256, 160)
+SENSOR_SIZE = (640, 360)
+# SENSOR_SIZE = (256, 160)
 BASE_ENV_CFG = dict(
     use_render=False,  # 학습 시에는 렌더링 비활성화
     map='X',
@@ -72,12 +73,26 @@ def convert_to_egocentric(global_target_pos, agent_pos, agent_heading):
     ego_vector = rotation_matrix @ vec_in_world
     return ego_vector
 
-
 def extract_sensor_data(obs):
     """관찰에서 센서 데이터 추출"""
     # image 데이터에서 RGB 추출 (마지막 프레임 사용)
+
+    # breakpoint()
+    # (Pdb) obs.keys()
+    # dict_keys(['image', 'state', 'depth', 'semantic'])
+    # (Pdb) obs['image'].shape
+    # (160, 256, 3, 3)
+    # (Pdb) obs['depth'].shape
+    # (160, 256, 1, 3)
+    # (Pdb) obs['semantic'].shape
+    # (160, 256, 3, 3)
+    
+    # 확인해보니까 마지막 -1 데이터만 사용할수있었음.
+
+
+    
     if 'image' in obs:
-        rgb_data = obs['image'][..., -3:].squeeze(-1)
+        rgb_data = obs['image'][..., -1]
         rgb_data = (rgb_data * 255).astype(np.uint8)
     else:
         rgb_data = None
@@ -89,7 +104,14 @@ def extract_sensor_data(obs):
     # 
     semantic_data = obs["semantic"][..., -1]
 
-    
+    breakpoint()
+    # (Pdb) rgb_data.shape
+    # (160, 256, 3)
+    # (Pdb) depth_data.shape
+    # (160, 256, 3)
+    # (Pdb) semantic_data.shape
+    # (160, 256, 3)
+    # (Pdb) 
     return rgb_data, depth_data, semantic_data
 
 def collect_trajectory(env, policy: typing.Callable, max_steps: int = 1000) -> tuple[list[dict], list[tuple[float, float]], list[float]]:
@@ -379,7 +401,7 @@ def set_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
 def main():
     # WandB 초기화
     wandb.init(
-        project="metaurban-ppo",
+        project="metaurban-rl",
         config={
             "train_epochs": 200,
             "episodes_per_batch": 16,
@@ -527,7 +549,7 @@ def create_and_save_plots(returns, actor_losses, critic_losses):
     plt.savefig('metaurban_training_results.png', dpi=300, bbox_inches='tight')
     
     # WandB에 이미지 업로드
-    wandb.log({"training_plots": wandb.Image(plt)})
+    # wandb.log({"training_plots": wandb.Image(plt)})
     
     # Scatter plot
     plt.figure(figsize=(10, 6))
@@ -543,7 +565,7 @@ def create_and_save_plots(returns, actor_losses, critic_losses):
     plt.title("Episode Returns Scatter Plot")
     plt.grid(True)
     plt.savefig('metaurban_returns_scatter.png', dpi=300, bbox_inches='tight')
-    wandb.log({"returns_scatter": wandb.Image(plt)})
+    # wandb.log({"returns_scatter": wandb.Image(plt)})
     
     plt.close('all')
 
