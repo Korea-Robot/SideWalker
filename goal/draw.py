@@ -54,11 +54,14 @@ env = SidewalkStaticMetaUrbanEnv(dict(use_render=render, object_density=0.1))
     
     
 env.reset() # launch the simulation
+
+nav = env.agent.navigation
+polyline = nav.reference_trajectory.get_polyline() 
 try:
     point_drawer = env.engine.make_point_drawer(scale=1) # create a point drawer
     line_drawer = env.engine.make_line_drawer(thickness=5) # create a line drawer
     for i in range(100):
-        
+            
         if i%5==0:
             # draw different lines every step
             line_1, color_1 = make_line(env.agent.position[0], env.agent.position[1], 0.5, 0.01*i) # define line 1 for test

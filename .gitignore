@@ -3,11 +3,17 @@ checkpoints/
 
 *.pt
 *.pth
+*.packaging
+*.png
+*.jpg 
+
 
 scripts/minimal_ppo.py
 gpt_images/
 *.avi
 *.zip
+
+.DS_Store
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -460,7 +460,7 @@ class ObservationProcessor:
             'images': torch.tensor(combined_img).unsqueeze(0),
             'goal_vec': torch.tensor(goal_vec).unsqueeze(0)
         }
-
+        
 class RewardCalculator:
     @staticmethod
     def compute_reward(obs, action, next_obs, done, info):
@@ -604,6 +604,7 @@ class PPOAgent:
                 end_idx = min(start_idx + self.config.batch_size, buffer_size)
                 batch_indices = indices[start_idx:end_idx]
                 
+                # Replay Buffer를 통한 Batch 데이터
                 batch_states_images = states_images[batch_indices]
                 batch_states_goal_vec = states_goal_vec[batch_indices]
                 batch_actions = actions[batch_indices]
@@ -611,21 +612,29 @@ class PPOAgent:
                 batch_advantages = advantages[batch_indices]
                 batch_returns = returns[batch_indices]
                 
+                # Mixture 분포로 부터 추출한 각 action에 대한 log prob, mean ,std
                 weights = self.get_mixture_weights()
                 _, new_log_probs, mean, std = self.policy.get_mixture_action_and_log_prob(
                     batch_states_images, batch_states_goal_vec, weights, batch_actions
                 )
                 
-                entropy = torch.distributions.Normal(mean, std).entropy().mean()
+                # 이전 policy와 새로운 policy의 prob ratio : 이전 prob detach
+                ratio = torch.exp(new_log_probs - batch_old_log_probs.detach())
                 
-                ratio = torch.exp(new_log_probs - batch_old_log_probs)
-                
-                surr1 = ratio * batch_advantages
-                surr2 = torch.clamp(ratio, 1 - self.config.clip_epsilon, 1 + self.config.clip_epsilon) * batch_advantages
+                # surrogate Advantage : PPO 식에 따라 급격한 ratio에 대해 upper bound를 걸어버림.
+                # 이때 Poligy Gradient에 따라 Advantage는 반드시 detach해서 업데이트 막아야함.
+                surr1 = ratio * batch_advantages.detach()
+                surr2 = torch.clamp(ratio, 1 - self.config.clip_epsilon, 1 + self.config.clip_epsilon) * batch_advantages.detach()
                 policy_loss = -torch.min(surr1, surr2).mean()
                 
+                # Value Function MSE : bootstrap 방식으로 V(s') 계산함. 반드시 batch_returns.detach()
                 current_values = self.value(batch_states_images, batch_states_goal_vec)
-                value_loss = nn.MSELoss()(current_values, batch_returns)
+                value_loss = nn.MSELoss()(current_values, batch_returns.detach())
+                
+                # entropy 포함 (옵션) : 탐험(exploration)을 유도, 과도한 수렴 방지
+                entropy = torch.distributions.Normal(mean, std).entropy().mean()
+
+                # policy_loss = -torch.min(surr1, surr2).mean() - self.config.entropy_coef * entropy  # if entropy_coef > 0
                 
                 # Policy update
                 self.policy_optimizer.zero_grad()
@@ -639,6 +648,7 @@ class PPOAgent:
                 torch.nn.utils.clip_grad_norm_(self.value.parameters(), self.config.max_grad_norm)
                 self.value_optimizer.step()
                 
+
                 total_policy_loss += policy_loss.item()
                 total_value_loss += value_loss.item()
                 total_entropy += entropy.item()

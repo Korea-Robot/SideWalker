@@ -183,7 +183,7 @@ class PPOConfig:
 
 class PPOAgent:
     """PPO 에이전트 - 메인 프로세스에서 모델 학습 담당"""
-    def __init__(self, config: PPOConfig, device='cuda'):
+    def __init__(self, config: PPOConfig, device='cuda:1'):
         self.config = config
         self.device = device
         
@@ -521,7 +521,7 @@ def main():
     
     # 설정
     NUM_WORKERS = 48  # 워커 프로세스 수
-    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+    DEVICE = 'cuda:1' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {DEVICE}")
     
     # PPO 에이전트 초기화 (메인 프로세스에서만)

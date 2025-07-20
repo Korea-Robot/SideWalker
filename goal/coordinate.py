@@ -8,7 +8,7 @@ env = SidewalkStaticMetaUrbanEnv(dict(use_render=False,
                         # debug = True,
                         show_coordinates=True, 
                         num_scenarios=1,
-                        map="XSOS",
+                        map="X",
                         object_density=0.1,
                         drivable_area_extension=55))
 
@@ -17,9 +17,9 @@ from metaurban import SidewalkStaticMetaUrbanEnv
 import tqdm
 
 env = SidewalkStaticMetaUrbanEnv(dict(
-    use_render=False,
+    use_render=True,
     map='X',
-    manual_control=False,
+    manual_control=True,
     
     num_scenarios=1000,
     start_seed=1000,

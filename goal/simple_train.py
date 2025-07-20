@@ -1,0 +1,165 @@
+import numpy as np
+import os
+import pygame
+from metaurban.envs import SidewalkStaticMetaUrbanEnv
+from metaurban.obs.mix_obs import ThreeSourceMixObservation
+from metaurban.component.sensors.depth_camera import DepthCamera
+from metaurban.component.sensors.rgb_camera import RGBCamera
+from metaurban.component.sensors.semantic_camera import SemanticCamera
+import math
+
+# 환경 설정
+SENSOR_SIZE = (256, 160)
+BASE_ENV_CFG = dict(
+    use_render=True,
+    map='X',
+    manual_control=False,
+    crswalk_density=1,
+    object_density=0.1,
+    walk_on_all_regions=False,
+    drivable_area_extension=55,
+    height_scale=1,
+    horizon=1000,  # 에피소드 최대 길이
+    
+    vehicle_config=dict(enable_reverse=True), # 후진 기능 활성화
+    
+    show_sidewalk=True,
+    show_crosswalk=True,
+    random_lane_width=True,
+    random_agent_model=True,
+    random_lane_num=True,
+    
+    # 시나리오 설정
+    random_spawn_lane_index=False,
+    num_scenarios=100,
+    accident_prob=0,
+    max_lateral_dist=5.0,
+    
+    agent_type='coco', # 에이전트 타입
+    
+    relax_out_of_road_done=False, # 경로 이탈 시 종료 조건 강화
+    
+    agent_observation=ThreeSourceMixObservation,
+    
+    image_observation=True,
+    sensors={
+        "rgb_camera": (RGBCamera, *SENSOR_SIZE),
+        "depth_camera": (DepthCamera, *SENSOR_SIZE),
+        "semantic_camera": (SemanticCamera, *SENSOR_SIZE),
+    },
+    log_level=50, # 로그 레벨 (50은 에러만 표시)
+)
+
+# --- 유틸리티 함수 ---
+
+def convert_to_egocentric(global_target_pos, agent_pos, agent_heading):
+    """
+    월드 좌표계의 목표 지점을 에이전트 중심의 자기(egocentric) 좌표계로 변환합니다.
+
+    :param global_target_pos: 월드 좌표계에서의 목표 지점 [x, y]
+    :param agent_pos: 월드 좌표계에서의 에이전트 위치 [x, y]
+    :param agent_heading: 에이전트의 현재 진행 방향 (라디안)
+    :return: 에이전트 기준 상대 위치 [x, y]. x: 좌/우, y: 전/후
+    """
+    # 1. 월드 좌표계에서 에이전트로부터 목표 지점까지의 벡터 계산
+    vec_in_world = global_target_pos - agent_pos
+
+    # 2. 에이전트의 heading의 "음수" 각도를 사용하여 회전 변환
+    # 월드 좌표계에서 에이전트 좌표계로 바꾸려면, 에이전트의 heading만큼 반대로 회전해야 함
+    theta = -agent_heading
+    cos_h = np.cos(theta)
+    sin_h = np.sin(theta)
+    
+    rotation_matrix = np.array([
+        [cos_h, -sin_h],
+        [sin_h,  cos_h]
+    ])
+
+    # 3. 회전 행렬을 적용하여 에이전트 중심 좌표계의 벡터를 얻음
+    ego_vector = rotation_matrix @ vec_in_world
+    
+    return ego_vector
+
+
+# --- 메인 실행 로직 ---
+
+# 환경 및 Pygame 초기화
+env = SidewalkStaticMetaUrbanEnv(BASE_ENV_CFG)
+
+import torch 
+import torch.nn as nn
+import torch.nn.functional as F 
+import numpy as np
+import matplotlib.pyplot as plt 
+
+class Actor(nn.Module):
+    def __init__(self,hidden_dim=512,output_dim=2):
+        super(self,Actor).__init__()
+        
+        pass
+    def forward(self,x,goal):
+        
+        return x 
+    
+    def get_action(self,x,goal):
+        
+        pass 
+        action = [0,1]
+        return action 
+
+actor = Actor()
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+policy = actor().to(device)
+policy.train()
+running = True
+try:
+    # 여러 에피소드 실행
+    for i in range(10):
+        env.reset(seed=i + 1)
+        
+        # 에피소드 루프
+        while running:
+            # --- 목표 지점 계산 (Egocentric) ---
+            ego_goal_position = np.array([0.0, 0.0]) # 기본값 초기화
+            nav = env.agent.navigation
+            waypoints = nav.checkpoints
+            
+            # 웨이포인트가 충분히 있는지 확인
+            k = 15  # 5번째 웨이포인트를 목표로 설정
+            if len(waypoints) > k:
+                global_target = waypoints[k]
+                agent_pos = env.agent.position
+                agent_heading = env.agent.heading_theta
+                ego_goal_position = convert_to_egocentric(global_target, agent_pos, agent_heading)
+
+            # 선택된 액션으로 환경을 한 스텝 진행
+            action = policy.get_action()
+            obs, reward, terminated, truncated, info = env.step(action)
+            
+            # 환경 렌더링 및 정보 표시
+            env.render(
+                text={
+                    "Agent Position": np.round(env.agent.position, 2),
+                    "Agent Heading": f"{math.degrees(env.agent.heading_theta):.1f} deg",
+                    "Reward": f"{reward:.2f}",
+                    "Ego Goal Position": np.round(ego_goal_position, 2)
+                }
+            )
+            
+            # 에피소드 종료 조건 확인
+            if terminated or truncated:
+                print(f"Episode finished. Terminated: {terminated}, Truncated: {truncated}")
+                break
+finally:
+    # 종료 시 리소스 정리
+    env.close()
+    pygame.quit()
+
+
+"""    
+PPO - CLIP based
+
+1.  **`convert_to_egocentric` 함수 추가**: 월드 좌표를 에이전트 중심의 상대 좌표로 변환하는 함수를 새로 추가
+2.  **목표 지점 계산 로직 추가**: 메인 루프 안에서 `nav.checkpoints`를 가져와 k번째 웨이포인트를 목표 지점으로 설정하고, 위에서 추가한 함수를 이용해 자기 중심 좌표로 변환
+3.  **렌더링 정보 업데이트**: `env.render()`의 `text` 인자에 계산된 `Ego Goal Position`을 추가하여 시뮬레이션 화면 좌측 상단에 실시간으로 표시되도록 했습니다. 다른 정보들도 소수점 둘째 자리까지만 표시하여 더 깔끔하게 보이도록 수정
+"""
