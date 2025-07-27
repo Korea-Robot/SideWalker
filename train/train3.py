@@ -9,110 +9,23 @@ import matplotlib.pyplot as plt
 from dataclasses import dataclass
 import wandb
 
+# --- MODIFIED: Added torchvision for EfficientNet ---
+import torchvision.models as models
+
 from metaurban.envs import SidewalkStaticMetaUrbanEnv
 from metaurban.obs.mix_obs import ThreeSourceMixObservation
 from metaurban.component.sensors.depth_camera import DepthCamera
 from metaurban.component.sensors.rgb_camera import RGBCamera
 from metaurban.component.sensors.semantic_camera import SemanticCamera
 
-# --- 환경 설정 ---
-SENSOR_SIZE = (640, 360)
-# SENSOR_SIZE = (256, 160)
-BASE_ENV_CFG = dict(
-    use_render=False,  # 학습 시에는 렌더링 비활성화
-    map='X',
-    manual_control=False,
-    crswalk_density=1,
-    object_density=0.1,
-    walk_on_all_regions=False,
-    drivable_area_extension=55,
-    height_scale=1,
-    horizon=1000,
-    
-    vehicle_config=dict(enable_reverse=True),
-    
-    show_sidewalk=True,
-    show_crosswalk=True,
-    random_lane_width=True,
-    random_agent_model=True,
-    random_lane_num=True,
-    
-    random_spawn_lane_index=False,
-    num_scenarios=100,
-    accident_prob=0,
-    max_lateral_dist=5.0,
-    
-    agent_type='coco',
-    
-    relax_out_of_road_done=False,
-    
-    agent_observation=ThreeSourceMixObservation,
-    
-    image_observation=True,
-    sensors={
-        "rgb_camera": (RGBCamera, *SENSOR_SIZE),
-        "depth_camera": (DepthCamera, *SENSOR_SIZE),
-        "semantic_camera": (SemanticCamera, *SENSOR_SIZE),
-    },
-    log_level=50,
-)
+# main.py
+from env_config import EnvConfig
+from metaurban.envs import SidewalkStaticMetaUrbanEnv
 
-# --- 유틸리티 함수 ---
-def convert_to_egocentric(global_target_pos, agent_pos, agent_heading):
-    """월드 좌표계의 목표 지점을 에이전트 중심의 자기 좌표계로 변환"""
-    vec_in_world = global_target_pos - agent_pos
-    theta = -agent_heading
-    cos_h = np.cos(theta)
-    sin_h = np.sin(theta)
-    
-    rotation_matrix = np.array([
-        [cos_h, -sin_h],
-        [sin_h,  cos_h]
-    ])
-    
-    ego_vector = rotation_matrix @ vec_in_world
-    return ego_vector
+# 설정 불러오기
+env_config = EnvConfig()
 
-def extract_sensor_data(obs):
-    """관찰에서 센서 데이터 추출"""
-    # image 데이터에서 RGB 추출 (마지막 프레임 사용)
-
-    # breakpoint()
-    # (Pdb) obs.keys()
-    # dict_keys(['image', 'state', 'depth', 'semantic'])
-    # (Pdb) obs['image'].shape
-    # (160, 256, 3, 3)
-    # (Pdb) obs['depth'].shape
-    # (160, 256, 1, 3)
-    # (Pdb) obs['semantic'].shape
-    # (160, 256, 3, 3)
-    
-    # 확인해보니까 마지막 -1 데이터만 사용할수있었음.
-
-
-    
-    if 'image' in obs:
-        rgb_data = obs['image'][..., -1]
-        rgb_data = (rgb_data * 255).astype(np.uint8)
-    else:
-        rgb_data = None
-    
-    # depth 1 => 3채널로 확장
-    depth_data = obs["depth"][..., -1]
-    depth_data = np.concatenate([depth_data,depth_data,depth_data], axis=-1)
-    
-    # 
-    semantic_data = obs["semantic"][..., -1]
-
-    # breakpoint()
-    # (Pdb) rgb_data.shape
-    # (160, 256, 3)
-    # (Pdb) depth_data.shape
-    # (160, 256, 3)
-    # (Pdb) semantic_data.shape
-    # (160, 256, 3)
-    # (Pdb) 
-    return rgb_data, depth_data, semantic_data
+from utils import convert_to_egocentric, extract_sensor_data,create_and_save_plots
 
 def collect_trajectory(env, policy: typing.Callable, max_steps: int = 1000) -> tuple[list[dict], list[tuple[float, float]], list[float]]:
     """환경에서 trajectory 수집"""
@@ -177,8 +90,7 @@ def obs_batch_to_tensor(obs_batch: list[dict], device: torch.device) -> tuple[to
         rgb = torch.tensor(obs['rgb'], dtype=torch.float32).permute(2, 0, 1) / 255.0
         rgb_batch.append(rgb)
         
-        # Depth: (H, W) -> (1, H, W)
-        # depth = torch.tensor(obs['depth'], dtype=torch.float32).unsqueeze(0)
+        # Depth: (H, W, 3) -> (3, H, W)
         depth = torch.tensor(obs['depth'], dtype=torch.float32).permute(2, 0, 1)
         depth_batch.append(depth)
         
@@ -190,52 +102,58 @@ def obs_batch_to_tensor(obs_batch: list[dict], device: torch.device) -> tuple[to
     depth_tensor = torch.stack(depth_batch).to(device)
     goal_tensor = torch.stack(goal_batch).to(device)
     
-    # breakpoint()
-    
     return rgb_tensor, depth_tensor, goal_tensor
 
-# --- 네트워크 정의 ---
+from perceptnet import PerceptNet
+
+# --- 네트워크 정의 (MODIFIED) ---
 class Actor(nn.Module):
     def __init__(self, hidden_dim=512, output_dim=2):
         super().__init__()
         
-        # RGB 처리 (3채널)
-        self.rgb_conv1 = nn.Conv2d(3, 32, kernel_size=8, stride=4)  # 256x160 -> 63x39
-        self.rgb_conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)  # 63x39 -> 30x18
-        self.rgb_conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)  # 30x18 -> 28x16
+        # --- RGB Encoder: EfficientNet-B0 (pre-trained) ---
+        # We use the feature extractor part and remove the final classifier
+        efficientnet = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT)
+        # The feature extractor part of efficientnet
+        self.rgb_encoder = efficientnet.features
+        # The output of features is (batch, 1280, H/32, W/32). We pool it to (batch, 1280).
+        self.rgb_pool = nn.AdaptiveAvgPool2d((1, 1))
         
-        # Depth 처리 (1채널)
-        self.depth_conv1 = nn.Conv2d(3, 32, kernel_size=8, stride=4)  # 256x160 -> 63x39
-        self.depth_conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)  # 63x39 -> 30x18
-        self.depth_conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)  # 30x18 -> 28x16
+        # --- Depth Encoder: PerceptNet ---
+        self.depth_encoder = PerceptNet(layers=[2, 2, 2, 2]) # As per the example
+        # The output of PerceptNet is (batch, 512, H/32, W/32). We pool it to (batch, 512).
+        self.depth_pool = nn.AdaptiveAvgPool2d((1, 1))
         
-        # 특징 융합
-        self.fc1 = nn.Linear(64 * 28 * 16 * 2 + 2, hidden_dim)  # RGB + Depth features + goal
+        # --- Feature Fusion ---
+        # EfficientNet-B0 feature size = 1280
+        # PerceptNet feature size = 512
+        # Goal vector size = 2
+        fusion_dim = 1280 + 512 + 2
+        
+        self.fc1 = nn.Linear(fusion_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, output_dim)
         
     def forward(self, rgb: torch.Tensor, depth: torch.Tensor, goal: torch.Tensor) -> torch.distributions.MultivariateNormal:
         batch_size = rgb.shape[0]
         
-        # RGB 특징 추출
-        rgb_x = F.relu(self.rgb_conv1(rgb))
-        rgb_x = F.relu(self.rgb_conv2(rgb_x))
-        rgb_x = F.relu(self.rgb_conv3(rgb_x))
-        rgb_x = rgb_x.view(batch_size, -1)
+        # RGB Feature Extraction
+        rgb_features = self.rgb_encoder(rgb)
+        rgb_features = self.rgb_pool(rgb_features)
+        rgb_features = rgb_features.view(batch_size, -1)
         
-        # Depth 특징 추출
-        depth_x = F.relu(self.depth_conv1(depth))
-        depth_x = F.relu(self.depth_conv2(depth_x))
-        depth_x = F.relu(self.depth_conv3(depth_x))
-        depth_x = depth_x.view(batch_size, -1)
+        # Depth Feature Extraction
+        depth_features = self.depth_encoder(depth)
+        depth_features = self.depth_pool(depth_features)
+        depth_features = depth_features.view(batch_size, -1)
         
-        # 특징 융합
-        x = torch.cat([rgb_x, depth_x, goal], dim=1)
+        # Feature Fusion
+        x = torch.cat([rgb_features, depth_features, goal], dim=1)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         mu = self.fc3(x)
         
-        # 고정된 표준편차
+        # Fixed standard deviation
         sigma = 0.1 * torch.ones_like(mu)
         return torch.distributions.MultivariateNormal(mu, torch.diag_embed(sigma))
 
@@ -243,43 +161,46 @@ class Critic(nn.Module):
     def __init__(self, hidden_dim=512):
         super().__init__()
         
-        # RGB 처리
-        self.rgb_conv1 = nn.Conv2d(3, 32, kernel_size=8, stride=4)
-        self.rgb_conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
-        self.rgb_conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+        # --- RGB Encoder: EfficientNet-B0 (pre-trained) ---
+        efficientnet = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT)
+        self.rgb_encoder = efficientnet.features
+        self.rgb_pool = nn.AdaptiveAvgPool2d((1, 1))
         
-        # Depth 처리
-        self.depth_conv1 = nn.Conv2d(1, 32, kernel_size=8, stride=4)
-        self.depth_conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
-        self.depth_conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+        # --- Depth Encoder: PerceptNet ---
+        self.depth_encoder = PerceptNet(layers=[2, 2, 2, 2])
+        self.depth_pool = nn.AdaptiveAvgPool2d((1, 1))
         
-        # Value 예측
-        self.fc1 = nn.Linear(64 * 28 * 16 * 2 + 2, hidden_dim)
+        # --- Value Prediction ---
+        # EfficientNet-B0 feature size = 1280
+        # PerceptNet feature size = 512
+        # Goal vector size = 2
+        fusion_dim = 1280 + 512 + 2
+
+        self.fc1 = nn.Linear(fusion_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, 1)
         
     def forward(self, rgb: torch.Tensor, depth: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
         batch_size = rgb.shape[0]
         
-        # RGB 특징 추출
-        rgb_x = F.relu(self.rgb_conv1(rgb))
-        rgb_x = F.relu(self.rgb_conv2(rgb_x))
-        rgb_x = F.relu(self.rgb_conv3(rgb_x))
-        rgb_x = rgb_x.view(batch_size, -1)
+        # RGB Feature Extraction
+        rgb_features = self.rgb_encoder(rgb)
+        rgb_features = self.rgb_pool(rgb_features)
+        rgb_features = rgb_features.view(batch_size, -1)
         
-        # Depth 특징 추출
-        depth_x = F.relu(self.depth_conv1(depth))
-        depth_x = F.relu(self.depth_conv2(depth_x))
-        depth_x = F.relu(self.depth_conv3(depth_x))
-        depth_x = depth_x.view(batch_size, -1)
+        # Depth Feature Extraction
+        depth_features = self.depth_encoder(depth)
+        depth_features = self.depth_pool(depth_features)
+        depth_features = depth_features.view(batch_size, -1)
         
-        # 특징 융합
-        x = torch.cat([rgb_x, depth_x, goal], dim=1)
+        # Feature Fusion
+        x = torch.cat([rgb_features, depth_features, goal], dim=1)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         value = self.fc3(x)
         
         return torch.squeeze(value, dim=1)
+
 
 class NNPolicy:
     def __init__(self, net: Actor):
@@ -287,13 +208,21 @@ class NNPolicy:
 
     def __call__(self, obs: dict) -> tuple[float, float]:
         """관찰을 받아 행동을 반환"""
+        self.net.eval() # Set to evaluation mode for inference
         rgb_tensor, depth_tensor, goal_tensor = obs_batch_to_tensor([obs], deviceof(self.net))
         
         with torch.no_grad():
-            throttle, steering = self.net(rgb_tensor, depth_tensor, goal_tensor).sample()[0]
+            dist = self.net(rgb_tensor, depth_tensor, goal_tensor)
+            action = dist.sample()[0]
+            # Clip action to be within a reasonable range, e.g., [-1, 1]
+            throttle = torch.clamp(action[0], -1.0, 1.0)
+            steering = torch.clamp(action[1], -1.0, 1.0)
+            
+        self.net.train() # Set back to training mode
         return throttle.item(), steering.item()
 
-# --- PPO 관련 함수들 ---
+
+# --- PPO 관련 함수들 (unchanged) ---
 def rewards_to_go(trajectory_rewards: list[float], gamma: float) -> list[float]:
     """감마 할인된 reward-to-go 계산"""
     trajectory_len = len(trajectory_rewards)
@@ -315,9 +244,11 @@ def compute_advantage(
     trajectory_len = len(trajectory_rewards)
     
     # Value 계산
+    critic.eval() # Set to evaluation mode
     with torch.no_grad():
         rgb_tensor, depth_tensor, goal_tensor = obs_batch_to_tensor(trajectory_observations, deviceof(critic))
         obs_values = critic.forward(rgb_tensor, depth_tensor, goal_tensor).detach().cpu().numpy()
+    critic.train() # Set back to training mode
     
     # Advantage = Reward-to-go - Value
     trajectory_advantages = np.array(rewards_to_go(trajectory_rewards, gamma)) - obs_values
@@ -337,7 +268,9 @@ def compute_ppo_loss(
     config: PPOConfig
 ) -> torch.Tensor:
     """PPO 클립 손실 계산"""
-    likelihood_ratio = torch.exp(pi_theta_given_st.log_prob(a_t) - pi_thetak_given_st.log_prob(a_t))
+    # Detach the old policy probabilities from the computation graph
+    log_prob_thetak = pi_thetak_given_st.log_prob(a_t).detach()
+    likelihood_ratio = torch.exp(pi_theta_given_st.log_prob(a_t) - log_prob_thetak)
     
     ppo_loss_per_example = -torch.minimum(
         likelihood_ratio * A_pi_thetak_given_st_at,
@@ -363,48 +296,58 @@ def train_ppo(
     # 데이터를 텐서로 변환
     rgb_tensor, depth_tensor, goal_tensor = obs_batch_to_tensor(observation_batch, device)
     true_value_batch_tensor = torch.tensor(reward_to_go_batch, dtype=torch.float32, device=device)
-    chosen_action_tensor = torch.tensor(action_batch, device=device)
-    advantage_batch_tensor = torch.tensor(advantage_batch, device=device)
+    chosen_action_tensor = torch.tensor(action_batch, dtype=torch.float32, device=device)
+    advantage_batch_tensor = torch.tensor(advantage_batch, dtype=torch.float32, device=device)
     
-    # Critic 학습
-    critic_optimizer.zero_grad()
-    pred_value_batch_tensor = critic.forward(rgb_tensor, depth_tensor, goal_tensor)
-    critic_loss = F.mse_loss(pred_value_batch_tensor, true_value_batch_tensor)
-    critic_loss.backward()
-    critic_optimizer.step()
+    # Normalize advantages
+    advantage_batch_tensor = (advantage_batch_tensor - advantage_batch_tensor.mean()) / (advantage_batch_tensor.std() + 1e-8)
     
     # 이전 정책의 행동 확률
     with torch.no_grad():
-        old_policy_action_probs = actor.forward(rgb_tensor, depth_tensor, goal_tensor)
+        old_policy_action_dist = actor.forward(rgb_tensor, depth_tensor, goal_tensor)
     
-    # Actor 학습
+    # Actor and Critic 학습
     actor_losses = []
+    critic_losses = []
     for _ in range(config.ppo_grad_descent_steps):
+        # Critic Update
+        critic_optimizer.zero_grad()
+        breakpoint() 
+        
+        pred_value_batch_tensor = critic.forward(rgb_tensor, depth_tensor, goal_tensor)
+        critic_loss = F.mse_loss(pred_value_batch_tensor, true_value_batch_tensor)
+
+        
+        critic_loss.backward()
+        critic_optimizer.step()
+        critic_losses.append(float(critic_loss.item()))
+
+        # Actor Update
         actor_optimizer.zero_grad()
-        current_policy_action_probs = actor.forward(rgb_tensor, depth_tensor, goal_tensor)
+        current_policy_action_dist = actor.forward(rgb_tensor, depth_tensor, goal_tensor)
         actor_loss = compute_ppo_loss(
-            old_policy_action_probs,
-            current_policy_action_probs,
+            old_policy_action_dist,
+            current_policy_action_dist,
             chosen_action_tensor,
             advantage_batch_tensor,
             config
         )
         actor_loss.backward()
         actor_optimizer.step()
-        actor_losses.append(float(actor_loss))
+        actor_losses.append(float(actor_loss.item()))
     
-    return actor_losses, [float(critic_loss)] * config.ppo_grad_descent_steps
+    return actor_losses, critic_losses
 
 def set_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
     """학습률 설정"""
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
-# --- 메인 학습 코드 ---
+# --- 메인 학습 코드 (unchanged) ---
 def main():
     # WandB 초기화
     wandb.init(
-        project="metaurban-rl",
+        project="metaurban-rl-efficientnet",
         config={
             "train_epochs": 200,
             "episodes_per_batch": 16,
@@ -435,7 +378,9 @@ def main():
     policy = NNPolicy(actor)
     
     # 환경 초기화
-    env = SidewalkStaticMetaUrbanEnv(BASE_ENV_CFG)
+    # env = SidewalkStaticMetaUrbanEnv(BASE_ENV_CFG)
+    env = SidewalkStaticMetaUrbanEnv(env_config.base_env_cfg)
+
     
     # PPO 설정
     ppo_config = PPOConfig(
@@ -445,8 +390,8 @@ def main():
     
     # 학습 통계
     returns = []
-    actor_losses = []
-    critic_losses = []
+    all_actor_losses = []
+    all_critic_losses = []
     
     # 학습 루프
     for epoch in range(config.train_epochs):
@@ -458,6 +403,7 @@ def main():
         
         # 배치 수집
         for episode in range(config.episodes_per_batch):
+            print(f"Epoch {epoch}/{config.train_epochs}, Collecting Episode {episode+1}/{config.episodes_per_batch}...")
             obs_traj, act_traj, rew_traj = collect_trajectory(env, policy)
             rtg_traj = rewards_to_go(rew_traj, config.gamma)
             adv_traj = compute_advantage(critic, obs_traj, rew_traj, config.gamma)
@@ -476,8 +422,8 @@ def main():
         
         # 통계 수집
         returns.append(trajectory_returns)
-        actor_losses.extend(batch_actor_losses)
-        critic_losses.extend(batch_critic_losses)
+        all_actor_losses.extend(batch_actor_losses)
+        all_critic_losses.extend(batch_critic_losses)
         
         # 로깅
         avg_return = np.mean(trajectory_returns)
@@ -485,8 +431,8 @@ def main():
         median_return = np.median(trajectory_returns)
         
         print(f"Epoch {epoch}, Avg Returns: {avg_return:.3f} +/- {std_return:.3f}, "
-              f"Median: {median_return:.3f}, Actor Loss: {batch_actor_losses[-1]:.3f}, "
-              f"Critic Loss: {batch_critic_losses[-1]:.3f}")
+              f"Median: {median_return:.3f}, Actor Loss: {np.mean(batch_actor_losses):.3f}, "
+              f"Critic Loss: {np.mean(batch_critic_losses):.3f}")
         
         # WandB 로깅
         wandb.log({
@@ -494,83 +440,19 @@ def main():
             "avg_return": avg_return,
             "std_return": std_return,
             "median_return": median_return,
-            "actor_loss": batch_actor_losses[-1],
-            "critic_loss": batch_critic_losses[-1],
+            "actor_loss": np.mean(batch_actor_losses),
+            "critic_loss": np.mean(batch_critic_losses),
         })
     
     # 모델 저장
-    torch.save(actor.state_dict(), 'metaurban_actor.pt')
-    torch.save(critic.state_dict(), 'metaurban_critic.pt')
+    torch.save(actor.state_dict(), 'metaurban_actor_efficientnet.pt')
+    torch.save(critic.state_dict(), 'metaurban_critic_efficientnet.pt')
     
     # 그래프 생성 및 저장
-    create_and_save_plots(returns, actor_losses, critic_losses)
+    create_and_save_plots(returns, all_actor_losses, all_critic_losses)
     
     env.close()
 
-def create_and_save_plots(returns, actor_losses, critic_losses):
-    """학습 결과 그래프 생성 및 저장"""
-    
-    # Returns 그래프
-    plt.figure(figsize=(12, 4))
-    
-    plt.subplot(1, 3, 1)
-    return_means = [np.mean(returns[i]) for i in range(len(returns))]
-    return_medians = [np.median(returns[i]) for i in range(len(returns))]
-    return_stds = [np.std(returns[i]) for i in range(len(returns))]
-    
-    plt.plot(return_means, label="Mean", color='blue')
-    plt.plot(return_medians, label="Median", color='red')
-    plt.fill_between(range(len(return_means)), 
-                     np.array(return_means) - np.array(return_stds), 
-                     np.array(return_means) + np.array(return_stds), 
-                     alpha=0.3, color='blue')
-    plt.xlabel("Epoch")
-    plt.ylabel("Return")
-    plt.title("Training Returns")
-    plt.legend()
-    plt.grid(True)
-    
-    # Actor Loss 그래프
-    plt.subplot(1, 3, 2)
-    plt.plot(actor_losses, label="Actor Loss", color='green')
-    plt.xlabel("Update Step")
-    plt.ylabel("Loss")
-    plt.title("Actor Loss")
-    plt.legend()
-    plt.grid(True)
-    
-    # Critic Loss 그래프
-    plt.subplot(1, 3, 3)
-    plt.plot(critic_losses, label="Critic Loss", color='orange')
-    plt.xlabel("Update Step")
-    plt.ylabel("Loss")
-    plt.title("Critic Loss")
-    plt.legend()
-    plt.grid(True)
-    
-    plt.tight_layout()
-    plt.savefig('metaurban_training_results.png', dpi=300, bbox_inches='tight')
-    
-    # WandB에 이미지 업로드
-    # wandb.log({"training_plots": wandb.Image(plt)})
-    
-    # Scatter plot
-    plt.figure(figsize=(10, 6))
-    xs = []
-    ys = []
-    for t, rets in enumerate(returns):
-        for ret in rets:
-            xs.append(t)
-            ys.append(ret)
-    plt.scatter(xs, ys, alpha=0.5, s=10)
-    plt.xlabel("Epoch")
-    plt.ylabel("Episode Return")
-    plt.title("Episode Returns Scatter Plot")
-    plt.grid(True)
-    plt.savefig('metaurban_returns_scatter.png', dpi=300, bbox_inches='tight')
-    # wandb.log({"returns_scatter": wandb.Image(plt)})
-    
-    plt.close('all')
 
 if __name__ == "__main__":
     main()
