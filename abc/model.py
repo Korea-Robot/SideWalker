@@ -358,7 +358,17 @@ class Actor(nn.Module):
         z = self.encoder(rgb, semantic, depth, goal)
         
         # Compute mean and std
-        mu = self.mean_net(z) * self.max_action
+        raw_mu = self.mean_net(z)
+        
+        # Split the raw_mu into steering and throttle
+        steering_mean = raw_mu[:, 0].unsqueeze(-1) * self.max_action
+        throttle_mean = raw_mu[:, 1].unsqueeze(-1)
+
+        # Scale throttle to [0.5, 1.0]
+        throttle_mean = 0.5 * (throttle_mean + 1) * 0.5 + 0.5
+
+        mu = torch.cat([steering_mean, throttle_mean], dim=-1)
+
         log_std = self.std_net(z)
         
         # Clamp log_std for numerical stability

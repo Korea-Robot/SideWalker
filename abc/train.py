@@ -22,11 +22,11 @@ from metaurban.component.sensors.semantic_camera import SemanticCamera
 # Import configurations and utilities
 from env_config import EnvConfig
 from config import Config
-from utils import convert_to_egocentric, extract_sensor_data, create_and_save_plots
+from utils import convert_to_egocentric, extract_sensor_data, create_and_save_plots, PDController
 
 # Import PPO model
 from perceptnet import PerceptNet
-from ppo_model import Actor,Critic
+from model import Actor,Critic
 
 
 class NNPolicy:
@@ -60,6 +60,8 @@ class NNPolicy:
 # Load configurations
 env_config = EnvConfig()
 
+# PD controller for steering
+pd_controller = PDController(p_gain=0.5, d_gain=0.3)
 
 def collect_trajectory(env, policy: typing.Callable, max_steps: int = 512) -> tuple[list[dict], list[tuple[float, float]], list[float]]:
     """환경에서 trajectory 수집"""
@@ -102,11 +104,18 @@ def collect_trajectory(env, policy: typing.Callable, max_steps: int = 512) -> tu
         observations.append(obs_data)
         
         # 행동 선택
-        action = policy(obs_data)
-        actions.append(action)
+        raw_action = policy(obs_data)
+        actions.append(raw_action)
         
+        target_angle, throttle = raw_action
+
+        # PD 제어를 통해 최종 steering 값 계산
+        final_steering = pd_controller.get_control(target_angle, 0) 
+
+        final_action = (final_steering, throttle)
+
         # 환경 스텝
-        obs, reward, terminated, truncated, info = env.step(action)
+        obs, reward, terminated, truncated, info = env.step(final_action)
         rewards.append(reward)
         
         step_count += 1

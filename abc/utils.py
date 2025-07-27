@@ -1,5 +1,20 @@
 import numpy as np 
+import math
 
+class PDController:
+    def __init__(self, p_gain, d_gain):
+        self.p_gain = p_gain
+        self.d_gain = d_gain
+        self.prev_error = 0
+
+    def get_control(self, target_angle, current_angle):
+        error = target_angle - current_angle
+        # 각도 차이가 -pi ~ pi 범위에 있도록 정규화
+        error = (error + math.pi) % (2 * math.pi) - math.pi
+        
+        control = self.p_gain * error + self.d_gain * (error - self.prev_error)
+        self.prev_error = error
+        return control
 
 # --- 유틸리티 함수 (unchanged) ---
 def convert_to_egocentric(global_target_pos, agent_pos, agent_heading):
