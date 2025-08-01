@@ -335,3 +335,20 @@ class Critic(nn.Module):
         value = self.value_net(z)
         
         return torch.squeeze(value, dim=-1)
+    
+        """Model.py 변경사항:
+
+Discrete Actor 구조:
+
+MultivariateNormal 분포 → Categorical 분포
+Steering: 5개 discrete actions (-1, -0.5, 0, 0.5, 1)
+Throttle: 3개 discrete actions (0.5, 0.75, 1.0)
+sample_action() 메서드로 discrete indices와 continuous values 모두 반환
+
+
+Action Space 정의:
+
+num_steering_actions: 조향 행동의 개수
+num_throttle_actions: 가속 행동의 개수
+steering_actions, throttle_actions: 실제 값들의 매핑
+        """

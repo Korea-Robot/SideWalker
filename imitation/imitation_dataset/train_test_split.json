@@ -1,0 +1,13 @@
+{
+  "train": [
+    1
+  ],
+  "validation": [],
+  "test": [],
+  "split_info": {
+    "total_episodes": 1,
+    "train_episodes": 1,
+    "val_episodes": 0,
+    "test_episodes": 0
+  }
+}

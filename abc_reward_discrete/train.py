@@ -502,3 +502,31 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    
+    """Train.py 변경사항:
+
+새로운 Reward 함수 적용:
+
+calculate_all_rewards() 함수를 실제로 사용
+환경 기본 reward 대신 구조화된 reward 구성요소들 합산
+
+
+Discrete Action 처리:
+
+DiscreteNNPolicy: discrete indices 반환
+collect_trajectory(): discrete action indices 저장
+compute_discrete_ppo_loss(): categorical distribution용 PPO loss
+
+
+PPO 학습 수정:
+
+Action batch가 이제 (steering_idx, throttle_idx) 튜플
+각 action dimension별로 separate categorical distribution 처리
+
+
+향상된 로깅:
+
+Discrete action indices 출력
+WandB project 이름 변경 ("discrete" 추가)
+    """
