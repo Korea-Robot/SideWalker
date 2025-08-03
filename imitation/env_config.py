@@ -14,7 +14,7 @@ class EnvConfig:
 
     def __post_init__(self):
         self.base_env_cfg = dict(
-            use_render=False,
+            use_render=True,
             map='X',
             manual_control=False,
             crswalk_density=1,

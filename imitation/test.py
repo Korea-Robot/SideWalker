@@ -86,11 +86,6 @@ try:
                 "velocity": env.agent.speed,
                 "angular_velocity": getattr(env.agent, 'angular_velocity', 0.0)
             }
-            
-            # 데이터 수집
-            collector.collect_sample(
-                obs, action, agent_state, ego_goal_position, reward, step
-            )                
 
             # 선택된 액션으로 환경을 한 스텝 진행
             obs, reward, terminated, truncated, info = env.step(action)
@@ -116,7 +111,11 @@ try:
             )
 
             # 에피소드 종료 조건
-            if terminated or truncated or step >= 800 or reward <0:
+            # if terminated or truncated or step >= 800 or reward <0:
+            if terminated or truncated or step >= 800 or step-stuck_interval > 0:
+                
+                
+                
                 episode_info = {
                     "seed": episode,
                     "terminated": terminated,
@@ -125,21 +124,9 @@ try:
                     "episode_length": step,
                     "success": reward > 0.5  # 성공 기준
                 }
+                break 
             
             step+=1 
-            
-        # 에피소드 하나 종료 및 시작 
-        collector.finish_episode(episode_info)
-
-        # 데이터셋 정보 저장
-        collector.save_dataset_info()
-        collector.create_train_test_split()
-        
-        print(f"\nDataset collection completed!")
-        print(f"Total episodes: {collector.episode_counter}")
-        print(f"Total samples: {collector.dataset_info['total_samples']}")
-        print(f"Dataset saved to: {collector.dataset_root}")
-        
         print(episode,': episode end ')
 
 finally:
@@ -270,10 +257,8 @@ class TransitionDataset(Dataset):
 
 # 가변 에피소드 처리
 def collate_episodes(batch):
-    """
-    batch: list of episodes. Each episode is a list of dicts (one per timestep)
-    Returns: padded tensors or batched sequences
-    """
+    #batch: list of episodes. Each episode is a list of dicts (one per timestep)
+    #Returns: padded tensors or batched sequences
     batch_data = []
     for episode in batch:
         frames = episode["episode"]
