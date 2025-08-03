@@ -1,22 +1,11 @@
 import numpy as np
 import os
-import pygame
 from metaurban.envs import SidewalkStaticMetaUrbanEnv
 from metaurban.obs.mix_obs import ThreeSourceMixObservation
 from metaurban.component.sensors.depth_camera import DepthCamera
 from metaurban.component.sensors.rgb_camera import RGBCamera
 from metaurban.component.sensors.semantic_camera import SemanticCamera
 import math
-
-# --- 설정 ---
-
-# 키보드 액션 매핑: [조향, 가속/브레이크]
-ACTION_MAP = {
-    pygame.K_w: [0, 1.0],   # 전진
-    pygame.K_s: [0, -1.0],  # 후진/브레이크
-    pygame.K_a: [0.5, 0.5], # 좌회전
-    pygame.K_d: [-0.5, 0.5]  # 우회전
-}
 
 # 환경 설정
 SENSOR_SIZE = (256, 160)
@@ -166,10 +155,6 @@ def extract_obs(obs):
 
 # 환경 및 Pygame 초기화
 env = SidewalkStaticMetaUrbanEnv(BASE_ENV_CFG)
-pygame.init()
-screen = pygame.display.set_mode((400, 150))
-pygame.display.set_caption("Control Agent with WASD")
-clock = pygame.time.Clock()
 
 running = True
 
@@ -203,14 +188,6 @@ try:
             # 기본 액션 (아무 키도 누르지 않았을 때)
             action = [0, 0]
 
-            # Pygame 이벤트 처리
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
-                # 키가 눌렸을 때 해당 키가 ACTION_MAP에 있는지 확인
-                elif event.type == pygame.KEYDOWN and event.key in ACTION_MAP:
-                    action = ACTION_MAP[event.key]
-            
             if not running:
                 break
 
@@ -288,9 +265,6 @@ try:
                 }
             )
 
-            # 루프 속도 제어
-            clock.tick(60)
-
             # 에피소드 종료 조건 확인
             if terminated or truncated:
                 print(f"Episode finished. Terminated: {terminated}, Truncated: {truncated}")
@@ -298,7 +272,6 @@ try:
 finally:
     # 종료 시 리소스 정리
     env.close()
-    pygame.quit()
 
 
 
