@@ -1,280 +1,180 @@
-import numpy as np
+# improved_walle_dataset.py
 import os
-from metaurban.envs import SidewalkStaticMetaUrbanEnv
-from metaurban.obs.mix_obs import ThreeSourceMixObservation
-from metaurban.component.sensors.depth_camera import DepthCamera
-from metaurban.component.sensors.rgb_camera import RGBCamera
-from metaurban.component.sensors.semantic_camera import SemanticCamera
-import math
-import random 
+import json
+import numpy as np
+from datetime import datetime
+from PIL import Image
+import torch
+from torch.utils.data import Dataset, DataLoader
+import torchvision.transforms as T
+from typing import List, Dict, Any, Optional
 
-# Import configurations and utilities
-from env_config import EnvConfig
-from utils import PD_Controller,convert_to_egocentric
-
-## PD controller 생성
-pd_controller = PD_Controller(kp=0.2,kd=0.0) # 제일 안정적임을 확인 
-
-# 데이터셋 수집기 초기화
-from walle_dataset import ImitationDatasetCollector
-collector = ImitationDatasetCollector("imitation_dataset")
-
-# --- 메인 실행 로직 ---
-# env = SidewalkStaticMetaUrbanEnv(BASE_ENV_CFG)
-env_config = EnvConfig()
-env = SidewalkStaticMetaUrbanEnv(env_config.base_env_cfg)
-
-running = True 
-try:
-    # 여러 에피소드 실행 : 각 에피소드 마다 데잍 저장 
-    for i in range(100000):
-        
-        # 일정 waypoints 이상 없으면 다시 환경 구성 .
-        obs,info = env.reset(seed=i + 2)
-        
-        waypoints = env.agent.navigation.checkpoints 
-        print('wayppoint num: ',len(waypoints))
-        
-        episode = random.randint(1,40000)
-        # 웨이포인트가 충분히 있는지 확인
-        while len(waypoints)<30:
-            obs,info = env.reset(seed= episode)
-            episode = random.randint(1,40000)
-            waypoints = env.agent.navigation.checkpoints 
-            print('NOT sufficient waypoints ',episode,' !!!!',len(waypoints))
-        num_waypoints = len(waypoints)
-        
-        # 5번째 웨이포인트를 목표로 설정
-        k = 5
-        step = 0 
-        reward = 0
-        # 만약에 끼어서 계속 가만히 있는경우 제거하기 위해서.
-        start_position = env.agent.position
-        stuck_interval = 10
-        
-        # 에피소드 루프
-        while running:
-
-            # --- 목표 지점 계산 (Egocentric) ---
-            global_target = waypoints[k]
-            agent_pos = env.agent.position
-            agent_heading = env.agent.heading_theta
-            
-            # k 번째 waypoint의 ego coordinate 기준 좌표 
-            ego_goal_position = convert_to_egocentric(global_target, agent_pos, agent_heading)
-
-            # action [steering, throttle] : steeering : -1~1 : throttle : -1~1 : 마이너스 값은 브레이크임.
-            # action = [1,1] # 왼쪽 주행. 
-            # action = [-1,1] # 오른쪽 주행. 
-            
-            action = pd_controller.update(ego_goal_position[1]) # yaw방향에 대해서만 추측함. throttle은 고정 
-            
-            # ----------- 목표 웨이포인트 업데이트 ---------------- 
-            # 목표지점까지 직선거리 계산 
-            distance_to_target = np.linalg.norm(ego_goal_position)
-            
-            # 목표 지점 업데이트
-            if distance_to_target< 5.0:
-                k +=1
-                if k>= num_waypoints:
-                    k = num_waypoints-1
-
-            # 에이전트 상태 정보 수집
-            agent_state = {
-                "position": env.agent.position,
-                "heading": env.agent.heading_theta,
-                "velocity": env.agent.speed,
-                "angular_velocity": getattr(env.agent, 'angular_velocity', 0.0)
-            }
-
-            # 선택된 액션으로 환경을 한 스텝 진행
-            obs, reward, terminated, truncated, info = env.step(action)
-
-            # 일정이상 시간동안 끼어서 안움직이면 종료. 
-            if step-stuck_interval > 0:
-                future_agent_pos = env.agent.position
-                length = np.linalg.norm(future_agent_pos-start_position)
-                if length <1:
-                    break
-                else:
-                    start_position= future_agent_pos
-                    stuck_interval+=10
-            
-            # 환경 렌더링 및 정보 표시
-            env.render(
-                text={
-                    "Agent Position": np.round(env.agent.position, 2),
-                    "Agent Heading": f"{math.degrees(env.agent.heading_theta):.1f} deg",
-                    "Reward": f"{reward:.2f}",
-                    "Ego Goal Position": np.round(ego_goal_position, 2)
-                }
-            )
-
-            # 에피소드 종료 조건
-            # if terminated or truncated or step >= 800 or reward <0:
-            if terminated or truncated or step >= 800 or step-stuck_interval > 0:
-                
-                
-                
-                episode_info = {
-                    "seed": episode,
-                    "terminated": terminated,
-                    "truncated": truncated,
-                    # "total_reward": episode_reward,
-                    "episode_length": step,
-                    "success": reward > 0.5  # 성공 기준
-                }
-                break 
-            
-            step+=1 
-        print(episode,': episode end ')
-
-finally:
-    # 종료 시 리소스 정리
-    env.close()
-
-"""    
-1.  **목표 지점 계산 로직 추가**: 메인 루프 안에서 `nav.checkpoints`를 가져와 마지막 웨이포인트를 목표 지점으로 설정하고, 계속 자기위치 기반으로 바로 앞에 가야할 위치를 업데이트 하면서 조종
-2. PD controller를 통해  이동하도록 지시 
-
-
-일단은 depth,segmantic, rgb데이터의 png, action & reward json or csv , 
-waypoints, ego state에 대한 csv or json을 에피소드 별로 저장하려고해. 
-그런데 문제는 끝나는 지점이 각각 달라서 항상 임의의 개수만큼 에피소드마다데이터가 쌓인다는거야. 
-이걸 어떻게 pytorch dataset dataloader로 만들까?
-
-
-# 데이터 구조 분리.
-data/
-├── episode_0001/
-│   ├── rgb/
-│   │   ├── 0000.png
-│   │   ├── 0001.png
-│   ├── depth/
-│   │   ├── 0000.png
-│   ├── semantic/
-│   │   ├── 0000.png
-│   ├── action_reward.json
-│   ├── ego_state.json        # 위치, 헤딩, 속도 등
-│   ├── waypoints.json
-├── episode_0002/
-...
-
-
-action_reward.json
-[
-  {"step": 0, "action": [0.1, 0.4], "reward": 0.2, "done": false},
-  {"step": 1, "action": [0.0, 0.5], "reward": 0.3, "done": false},
-  {"step": 2, "action": [-0.2, 0.3], "reward": -1.0, "done": true}
-]
-
-ego_state.json
-[
-  {"position": [1.2, 0.4], "heading": 0.12},
-  {"position": [1.5, 0.5], "heading": 0.13},
-  ...
-]
-
-
-"""
-
-
-"""
+########## --- PyTorch Dataset 클래스들 --- #########
+# The Dataset classes from the previous fix are correct and need no changes.
 class TransitionDataset(Dataset):
-    def __init__(self, root_dir, transform=None):
+    def __init__(self, root_dir: str, split: str = "train", transforms: Optional[Dict[str, T.Compose]] = None):
         self.root_dir = root_dir
-        self.transform = transform or T.Compose([
-            T.Resize((160, 256)),
-            T.ToTensor()
-        ])
-        self.transitions = []  # (episode_path, idx)
-
-        self._build_index()
-
-    def _build_index(self):
-        # 각 에피소드에서 transition (t, t+1)을 수집
-        for ep_name in sorted(os.listdir(self.root_dir)):
-            ep_path = os.path.join(self.root_dir, ep_name)
-            if not os.path.isdir(ep_path):
-                continue
-            with open(os.path.join(ep_path, "action_reward.json")) as f:
-                actions = json.load(f)
-            length = len(actions)
-            for i in range(length - 1):
-                self.transitions.append((ep_path, i))
-
-    def __len__(self):
-        return len(self.transitions)
-
+        self.split = split
+        self.transforms = transforms
+        if self.transforms is None:
+            self.transforms = {
+                'rgb': T.Compose([T.Resize((360, 640)), T.ToTensor()]),
+                'grayscale': T.Compose([T.Resize((360, 640)), T.ToTensor()])
+            }
+        self.transitions, self.episode_paths = [], []
+        self._load_split_info()
+        self._build_transition_index()
+    def _load_split_info(self):
+        split_file = os.path.join(self.root_dir, "train_test_split.json")
+        if os.path.exists(split_file):
+            with open(split_file, 'r') as f:
+                episode_ids = json.load(f).get(self.split, [])
+        else:
+            episode_dirs = [d for d in os.listdir(self.root_dir) if d.startswith("episode_")]
+            episode_ids = [int(d.split("_")[1]) for d in episode_dirs]
+        for ep_id in episode_ids:
+            ep_path = os.path.join(self.root_dir, f"episode_{ep_id:04d}")
+            if os.path.exists(ep_path): self.episode_paths.append(ep_path)
+    def _build_transition_index(self):
+        for ep_path in self.episode_paths:
+            action_file = os.path.join(ep_path, "action_reward.json")
+            if not os.path.exists(action_file): continue
+            with open(action_file, 'r') as f: actions = json.load(f)
+            for i in range(len(actions) - 1): self.transitions.append((ep_path, i))
+    def __len__(self): return len(self.transitions)
+    def _load_image(self, folder: str, ep_path: str, step: int):
+        img_path = os.path.join(ep_path, folder, f"{step:04d}.png")
+        img = Image.open(img_path) if os.path.exists(img_path) else Image.new('RGB' if folder == 'rgb' else 'L', (640, 360), 0)
+        transform = self.transforms.get("rgb" if folder == "rgb" else "grayscale")
+        if folder == "rgb" and img.mode != 'RGB': img = img.convert('RGB')
+        elif folder != "rgb" and img.mode != 'L': img = img.convert('L')
+        return transform(img)
     def __getitem__(self, idx):
-        ep_path, i = self.transitions[idx]
+        ep_path, step_idx = self.transitions[idx]
+        rgb_t, depth_t, semantic_t = self._load_image("rgb", ep_path, step_idx), self._load_image("depth", ep_path, step_idx), self._load_image("semantic", ep_path, step_idx)
+        rgb_tp1, depth_tp1, semantic_tp1 = self._load_image("rgb", ep_path, step_idx + 1), self._load_image("depth", ep_path, step_idx + 1), self._load_image("semantic", ep_path, step_idx + 1)
+        with open(os.path.join(ep_path, "action_reward.json"), 'r') as f: actions = json.load(f)
+        with open(os.path.join(ep_path, "ego_state.json"), 'r') as f: ego_states = json.load(f)
+        action, reward, done = torch.tensor(actions[step_idx]["action"], dtype=torch.float32), torch.tensor(actions[step_idx]["reward"], dtype=torch.float32), torch.tensor(actions[step_idx]["done"], dtype=torch.bool)
+        ego_t, ego_tp1 = ego_states[step_idx], ego_states[step_idx + 1]
+        position_t, position_tp1 = torch.tensor(ego_t["position"], dtype=torch.float32), torch.tensor(ego_tp1["position"], dtype=torch.float32)
+        heading_t, heading_tp1 = torch.tensor(ego_t["heading"], dtype=torch.float32), torch.tensor(ego_tp1["heading"], dtype=torch.float32)
+        goal_position = torch.tensor(ego_t["goal_position"], dtype=torch.float32)
+        return {"rgb_t": rgb_t, "depth_t": depth_t, "semantic_t": semantic_t, "action": action, "reward": reward, "done": done, "rgb_tp1": rgb_tp1, "depth_tp1": depth_tp1, "semantic_tp1": semantic_tp1, "position_t": position_t, "position_tp1": position_tp1, "heading_t": heading_t, "heading_tp1": heading_tp1, "goal_position": goal_position}
 
-        def load_image(folder, idx):
-            img = Image.open(os.path.join(ep_path, folder, f"{idx:04d}.png"))
-            return self.transform(img)
+class EpisodeDataset(Dataset):
+    def __init__(self, root_dir: str, split: str = "train", transforms: Optional[Dict[str, T.Compose]] = None, max_episode_length: Optional[int] = None):
+        self.root_dir, self.split, self.transforms, self.max_episode_length = root_dir, split, transforms, max_episode_length
+        if self.transforms is None: self.transforms = {'rgb': T.Compose([T.Resize((360, 640)), T.ToTensor()]), 'grayscale': T.Compose([T.Resize((360, 640)), T.ToTensor()])}
+        self.episode_paths = []
+        self._load_split_info()
+    def _load_split_info(self):
+        split_file = os.path.join(self.root_dir, "train_test_split.json")
+        if os.path.exists(split_file):
+            with open(split_file, 'r') as f: episode_ids = json.load(f).get(self.split, [])
+        else:
+            episode_dirs = [d for d in os.listdir(self.root_dir) if d.startswith("episode_")]
+            episode_ids = [int(d.split("_")[1]) for d in episode_dirs]
+        for ep_id in episode_ids:
+            ep_path = os.path.join(self.root_dir, f"episode_{ep_id:04d}")
+            if os.path.exists(ep_path): self.episode_paths.append(ep_path)
+    def __len__(self): return len(self.episode_paths)
+    def _load_image(self, folder: str, ep_path: str, step: int):
+        img_path = os.path.join(ep_path, folder, f"{step:04d}.png")
+        img = Image.open(img_path) if os.path.exists(img_path) else Image.new('RGB' if folder == 'rgb' else 'L', (640, 360), 0)
+        transform = self.transforms.get("rgb" if folder == "rgb" else "grayscale")
+        if folder == "rgb" and img.mode != 'RGB': img = img.convert('RGB')
+        elif folder != "rgb" and img.mode != 'L': img = img.convert('L')
+        return transform(img)
+    def __getitem__(self, idx):
+        ep_path = self.episode_paths[idx]
+        with open(os.path.join(ep_path, "action_reward.json"), 'r') as f: actions = json.load(f)
+        with open(os.path.join(ep_path, "ego_state.json"), 'r') as f: ego_states = json.load(f)
+        episode_length = min(len(actions), self.max_episode_length) if self.max_episode_length is not None else len(actions)
+        episode_data = []
+        for step in range(episode_length):
+            rgb, depth, semantic = self._load_image("rgb", ep_path, step), self._load_image("depth", ep_path, step), self._load_image("semantic", ep_path, step)
+            action, reward, done = torch.tensor(actions[step]["action"], dtype=torch.float32), torch.tensor(actions[step]["reward"], dtype=torch.float32), torch.tensor(actions[step]["done"], dtype=torch.bool)
+            ego_state = ego_states[step]
+            position, heading, goal_position = torch.tensor(ego_state["position"], dtype=torch.float32), torch.tensor(ego_state["heading"], dtype=torch.float32), torch.tensor(ego_state["goal_position"], dtype=torch.float32)
+            episode_data.append({"rgb": rgb, "depth": depth, "semantic": semantic, "action": action, "reward": reward, "done": done, "position": position, "heading": heading, "goal_position": goal_position, "step": step})
+        return {"episode": episode_data, "episode_length": episode_length, "episode_path": ep_path}
 
-        # Load obs_t
-        rgb_t = load_image("rgb", i)
-        depth_t = load_image("depth", i)
-        semantic_t = load_image("semantic", i)
+########## --- 커스텀 Collate 함수들 --- #########
+# (No changes needed here)
+def pad_sequences(sequences: List[List[torch.Tensor]], max_len=None):
+    if max_len is None: max_len = max(len(seq) for seq in sequences) if sequences else 0
+    padded, masks = [], []
+    for seq in sequences:
+        seq_len = len(seq)
+        if seq_len > 0:
+            if seq_len < max_len:
+                padding = [torch.zeros_like(seq[0]) for _ in range(max_len - seq_len)]
+                padded_seq, mask = seq + padding, [1] * seq_len + [0] * (max_len - seq_len)
+            else:
+                padded_seq, mask = seq[:max_len], [1] * max_len
+            padded.append(torch.stack(padded_seq)); masks.append(torch.tensor(mask, dtype=torch.bool))
+    if not padded: return torch.empty(0), torch.empty(0)
+    return torch.stack(padded), torch.stack(masks)
 
-        # Load obs_{t+1}
-        rgb_tp1 = load_image("rgb", i+1)
-        depth_tp1 = load_image("depth", i+1)
-        semantic_tp1 = load_image("semantic", i+1)
-
-        with open(os.path.join(ep_path, "action_reward.json")) as f:
-            ar_data = json.load(f)
-        with open(os.path.join(ep_path, "ego_state.json")) as f:
-            ego_data = json.load(f)
-
-        action = torch.tensor(ar_data[i]["action"], dtype=torch.float32)
-        reward = torch.tensor(ar_data[i]["reward"], dtype=torch.float32)
-        done = torch.tensor(ar_data[i]["done"], dtype=torch.bool)
-
-        # Ego state
-        pos_t = torch.tensor(ego_data[i]["position"], dtype=torch.float32)
-        pos_tp1 = torch.tensor(ego_data[i+1]["position"], dtype=torch.float32)
-        heading_t = torch.tensor(ego_data[i]["heading"], dtype=torch.float32)
-        heading_tp1 = torch.tensor(ego_data[i+1]["heading"], dtype=torch.float32)
-
-        return {
-            "rgb_t": rgb_t,
-            "depth_t": depth_t,
-            "semantic_t": semantic_t,
-            "action": action,
-            "reward": reward,
-            "done": done,
-            "rgb_tp1": rgb_tp1,
-            "depth_tp1": depth_tp1,
-            "semantic_tp1": semantic_tp1,
-            "pos_t": pos_t,
-            "pos_tp1": pos_tp1,
-            "heading_t": heading_t,
-            "heading_tp1": heading_tp1
-        }
-
-
-# 가변 에피소드 처리
 def collate_episodes(batch):
-    #batch: list of episodes. Each episode is a list of dicts (one per timestep)
-    #Returns: padded tensors or batched sequences
-    batch_data = []
-    for episode in batch:
-        frames = episode["episode"]
-        batch_data.append(frames)
-    return batch_data
+    episodes = [item["episode"] for item in batch]
+    episode_lengths = [item["episode_length"] for item in batch]
+    max_len = max(episode_lengths) if episode_lengths else 0
+    if max_len == 0: return {"rgb": torch.empty(0), "mask": torch.empty(0), "episode_lengths": torch.tensor(episode_lengths, dtype=torch.long)}
+    def extract_and_pad(key):
+        sequences = [[step[key] for step in ep] for ep in episodes]
+        if sequences and sequences[0] and sequences[0][0].ndim == 0: sequences = [[s.unsqueeze(0) for s in seq] for seq in sequences]
+        padded, mask = pad_sequences(sequences, max_len)
+        return padded, mask
+    rgb_padded, mask = extract_and_pad("rgb")
+    depth_padded, _ = extract_and_pad("depth")
+    semantic_padded, _ = extract_and_pad("semantic")
+    action_padded, _ = extract_and_pad("action")
+    reward_padded, _ = extract_and_pad("reward")
+    position_padded, _ = extract_and_pad("position")
+    heading_padded, _ = extract_and_pad("heading")
+    goal_padded, _ = extract_and_pad("goal_position")
+    return {"rgb": rgb_padded, "depth": depth_padded, "semantic": semantic_padded, "actions": action_padded.squeeze(-1) if action_padded.ndim > 2 else action_padded, "rewards": reward_padded.squeeze(-1), "positions": position_padded, "headings": heading_padded.squeeze(-1), "goals": goal_padded, "mask": mask, "episode_lengths": torch.tensor(episode_lengths, dtype=torch.long)}
 
+########## --- 사용 예시 --- #########
+def create_dataloaders(dataset_root: str, batch_size: int = 4, num_workers: int = 2):
+    img_size = (360, 640)
+    rgb_transform = T.Compose([T.Resize(img_size), T.ToTensor(), T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+    grayscale_transform = T.Compose([T.Resize(img_size), T.ToTensor()])
+    transforms = {'rgb': rgb_transform, 'grayscale': grayscale_transform}
+    train_transition_dataset = TransitionDataset(dataset_root, split="train", transforms=transforms)
+    val_transition_dataset = TransitionDataset(dataset_root, split="validation", transforms=transforms)
+    train_transition_loader = DataLoader(train_transition_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+    val_transition_loader = DataLoader(val_transition_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    train_episode_dataset = EpisodeDataset(dataset_root, split="train", transforms=transforms)
+    val_episode_dataset = EpisodeDataset(dataset_root, split="validation", transforms=transforms)
+    train_episode_loader = DataLoader(train_episode_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, collate_fn=collate_episodes)
+    val_episode_loader = DataLoader(val_episode_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=collate_episodes)
+    return {"train_transition": train_transition_loader, "val_transition": val_transition_loader, "train_episode": train_episode_loader, "val_episode": val_episode_loader}
 
-# 사용 예시
-from torch.utils.data import DataLoader
+if __name__ == "__main__":
 
-dataset = EpisodeDataset("data")
-loader = DataLoader(dataset, batch_size=4, collate_fn=collate_episodes)
+    print("Creating a dummy dataset for testing...")
+    dataset_root = "imitation_dataset"
+    dataloaders = create_dataloaders(dataset_root, batch_size=2, num_workers=0)
+    
+    print("=== Transition Dataset Test ===")
+    try:
+        for i, batch in enumerate(dataloaders["train_transition"]):
+            print(f"Batch {i}:")
+            print(f"  RGB shape: {batch['rgb_t'].shape}")
+            print(f"  Depth shape: {batch['depth_t'].shape}")
+            print(f"  Action shape: {batch['action'].shape}")
+            if i >= 1: break
+    except Exception as e: print(f"Error during Transition Dataset test: {e}")
 
-for batch in loader:
-    # batch[i][t]["rgb"] 형태로 접근
-    # i: 에피소드 index, t: timestep index
-    rgb_seq_0 = [step["rgb"] for step in batch[0]]
-    action_seq_0 = [step["action"] for step in batch[0]]
-"""
+    print("\n=== Episode Dataset Test ===")
+    try:
+        for i, batch in enumerate(dataloaders["train_episode"]):
+            print(f"Batch {i}:")
+            print(f"  RGB shape: {batch['rgb'].shape}")
+            print(f"  Actions shape: {batch['actions'].shape}")
+            print(f"  Episode lengths: {batch['episode_lengths']}")
+            if i >= 1: break
+    except Exception as e: print(f"Error during Episode Dataset test: {e}")

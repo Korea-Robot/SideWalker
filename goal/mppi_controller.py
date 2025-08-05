@@ -1,364 +1,252 @@
 import numpy as np
-import os
-import math
 import time
 
-from metaurban.envs import SidewalkStaticMetaUrbanEnv
-# Change 1: Directly use LidarStateObservation instead of the mixed observation
-from metaurban.obs.state_obs import LidarStateObservation
-
-
-"""
-LiDAR data
-
-획득: obs[-mppi_controller.num_lidar_rays:] 코드를 통해 환경 관측값(obs) 벡터의 마지막 240개 요소를 가져옵니다.
-
-구조: 이 240개의 숫자 배열은 자동차를 중심으로 360도를 240개의 부채꼴로 나눈 것입니다. 각 요소는 해당 방향으로의 장애물까지의 거리를 나타냅니다.
-
-1.0: 해당 방향으로 최대 탐지 거리(50m)까지 장애물이 없다는 의미입니다 (안전).
-
-0.0: 장애물이 차에 바로 붙어 있다는 의미입니다 (매우 위험).
-
-0.5: 최대 거리의 절반(25m) 지점에 장애물이 있다는 의미입니다.
-
-
-
-## 코드에서의 활용법: '위험도' 계산
-코드는 이 240개의 거리 값을 '위험도'로 변환하여 사용합니다. 핵심은 _compute_cost 함수에 있습니다.
-
-경로-라이다 매핑: 컨트롤러가 예측한 수천 개의 가상 경로(trajectories) 위를 지나는 각 지점이 어떤 방향에 해당하는지 계산합니다. 그리고 그 방향에 해당하는 라이다 값(거리 정보)을 가져옵니다.
-
-위험도 변환 및 증폭: 아래 코드가 가장 중요한 부분입니다.
-
-
-obstacle_proximity_cost = (1.0 - lidar_scan[indices]) ** 2
-1.0 - lidar_scan: 이 연산을 통해 '거리' 정보를 '근접도' 또는 '위험도' 정보로 바꿉니다.
-
-라이다 값이 1.0(안전)이면 위험도는 0.0이 됩니다.
-
-라이다 값이 0.0(위험)이면 위험도는 1.0이 됩니다.
-
-** 2 (제곱): 이 '위험도'를 제곱하는 것이 핵심입니다. 이 연산은 가까운 장애물에 대한 페널티를 기하급수적으로 증폭시키는 효과를 가져옵니다.
-
-멀리 있는 장애물 (위험도 0.1) → 비용 0.01 (거의 무시)
-
-가까이 있는 장애물 (위험도 0.9) → 비용 0.81 (매우 큰 페널티)
-
-비용 누적: 이 계산된 위험도를 경로 전체에 대해 합산하여, 특정 경로가 얼마나 위험한지를 나타내는 최종 '장애물 비용'을 산출합니다.
-
-
-"""
-# --- MPPI Controller ---
-class MPPIController:
-    def __init__(self, env, horizon=15, num_samples=512, temperature=0.5):
+class MPPI:
+    def __init__(self, alpha=1.0, beta=1.0, dt=0.1, lambda_=1.0):
         """
-        MPPI Controller Initialization.
+        MPPI 컨트롤러 초기화
+        
+        Args:
+            alpha: 가속도 제어 게인
+            beta: 조향 제어 게인  
+            dt: 시간 스텝
+            lambda_: 온도 매개변수 (작을수록 더 탐욕적)
+        """
+        self.alpha = alpha
+        self.beta = beta 
+        self.dt = dt
+        self.lambda_ = lambda_
+        
+        # MPPI 파라미터
+        self.N = 1000  # 샘플링할 궤적 수
+        self.H = 15    # 예측 지평선 (시간 스텝)
+        
+        # 제어 입력 제한
+        self.u_min = np.array([-1.0, -1.0])  # [steering, throttle] 최소값
+        self.u_max = np.array([1.0, 1.0])    # [steering, throttle] 최대값
+        
+        # 노이즈 공분산
+        self.sigma = np.array([[0.3, 0.0], [0.0, 0.2]])  # [steering_noise, throttle_noise]
+        
+        # 이전 제어 시퀀스 저장 (warm start)
+        self.prev_u_seq = np.zeros((self.H, 2))
     
-        :param env: The MetaUrban environment instance.
-        :param horizon: int, The prediction horizon (number of steps to look ahead).
-        :param num_samples: int, The number of trajectories to sample at each step.
-        :param temperature: float, A parameter to control the "softness" of the weighted average.
+    def dynamics_model(self, state, action):
         """
-        self.agent = env.agent
-        self.H = horizon
-        self.K = num_samples
-        self.lambda_ = temperature
-
-        # Vehicle dynamics parameters
-        self.L = self.agent.LENGTH  # Vehicle wheelbase
-        # NEW CORRECTED LINE
-        self.dt = env.config["decision_repeat"] * env.config["physics_world_step_size"] # Timestep duration
-
-        # Action limits
-        self.max_steer = 1
-        self.max_accel = 1
-        self.max_brake = 1
-
-        # Initialize nominal control sequence (e.g., go straight with no acceleration)
-        self.nominal_actions = np.zeros((self.H, 2))  # [steering, acceleration]
-
-        # Noise for sampling
-        self.noise_std = np.array([0.5, 1.0]) # Std dev for steering and acceleration noise
-
-        # Cost function weights
-        self.W_GOAL = 30.0      # Weight for reaching the goal
-        self.W_OBSTACLE = 1.0  # Weight for avoiding obstacles
-        self.W_CONTROL = 0.1    # Weight for smooth control
-
-        self.lidar_max_dist = self.agent.config["lidar"]["distance"]
-        self.num_lidar_rays = self.agent.config["lidar"]["num_lasers"]
-
-
-    def _dynamics_model(self, state, action):
+        차량 동역학 모델 (bicycle model 근사)
+        
+        Args:
+            state: [x, y, theta, velocity, angular_velocity]
+            action: [steering, throttle]
+            
+        Returns:
+            next_state: 다음 상태
         """
-        A simple kinematic bicycle model for predicting the next state.
+        x, y, theta, velocity, angular_vel = state
+        steering, throttle = action
         
-        :param state: [x, y, heading_theta, speed_ms]
-        :param action: [steering, acceleration_m/s^2]
-        :return: next_state
+        # 차량 동역학 업데이트
+        next_x = x + np.cos(theta) * velocity * self.dt
+        next_y = y + np.sin(theta) * velocity * self.dt
+        next_theta = theta + angular_vel * self.dt
+        next_velocity = velocity + self.alpha * throttle * self.dt
+        next_angular_vel = angular_vel + self.beta * steering * self.dt
+        
+        # 속도와 각속도 제한
+        next_velocity = np.clip(next_velocity, -5.0, 10.0)
+        next_angular_vel = np.clip(next_angular_vel, -2.0, 2.0)
+        
+        return np.array([next_x, next_y, next_theta, next_velocity, next_angular_vel])
+    
+    def rollout_dynamics(self, initial_state, u_sequences):
         """
-        x, y, theta, speed_ms = state
-        steer, accel = action
-
-        # Unnormalize action
-        steer = steer * self.max_steer
+        N개의 제어 시퀀스에 대해 H 스텝 동안 궤적을 시뮬레이션
         
-        # Apply physics
-        next_speed_ms = speed_ms + accel * self.dt
-        next_speed_ms = np.clip(next_speed_ms, 0, self.agent.max_speed_km_h / 3.6)
-        
-        # Distance traveled
-        dist = next_speed_ms * self.dt
-        
-        # --- THIS IS THE CORRECTED PART ---
-        # Use np.where for vectorized conditional logic.
-        # This avoids the "ambiguous truth value" error.
-        # Condition: Check where speed is non-negligible.
-        condition = abs(next_speed_ms) >= 1e-3
-        
-        # If condition is True, calculate heading change.
-        delta_theta = (next_speed_ms / self.L) * np.tan(steer) * self.dt
-        
-        # If condition is False, heading change is 0.
-        # np.where selects from delta_theta or 0.0 based on the condition for each element.
-        next_theta = theta + np.where(condition, delta_theta, 0.0)
-        # --- END OF CORRECTION ---
-        
-        next_x = x + dist * np.cos(next_theta)
-        next_y = y + dist * np.sin(next_theta)
-        
-        return np.array([next_x, next_y, next_theta, next_speed_ms])
-
-    def _compute_cost(self, trajectories, target_pos, lidar_scan):
+        Args:
+            initial_state: 초기 상태 [x, y, theta, velocity, angular_velocity]
+            u_sequences: (N, H, 2) 제어 시퀀스들
+            
+        Returns:
+            trajectories: (N, H+1, 5) 궤적들
         """
-        Computes the cost for all sampled trajectories.
+        N = u_sequences.shape[0]
+        trajectories = np.zeros((N, self.H + 1, 5))
         
-        :param trajectories: A tensor of shape (K, H, 4) containing K simulated state sequences.
-        :param target_pos: The egocentric coordinates [x, y] of the target waypoint.
-        :param lidar_scan: The 240-dimensional Lidar scan data.
-        :return: An array of costs for each trajectory.
+        # 모든 궤적의 초기 상태 설정
+        trajectories[:, 0, :] = initial_state
+        
+        # 각 시간 스텝에 대해 동역학 시뮬레이션
+        for t in range(self.H):
+            for n in range(N):
+                trajectories[n, t+1, :] = self.dynamics_model(
+                    trajectories[n, t, :], 
+                    u_sequences[n, t, :]
+                )
+        
+        return trajectories
+    
+    def cost_function(self, trajectories, lidar_data, goal_position):
         """
-        K, H, _ = trajectories.shape
-        costs = np.zeros(K)
-
-        # --- 1. Goal Cost ---
-        # Penalize distance from the final predicted position to the target
-        final_positions = trajectories[:, -1, :2] # Shape (K, 2)
-        dist_to_goal = np.linalg.norm(final_positions - target_pos, axis=1)
-        costs += self.W_GOAL * dist_to_goal
-
-        # --- 2. Obstacle Cost ---
-        # Penalize trajectories that get close to Lidar-detected obstacles
-        traj_positions = trajectories[:, :, :2] # Shape (K, H, 2)
+        궤적들에 대한 비용 계산
         
-        # Lidar rays are clockwise from front (0 deg).
-        # We need to map trajectory points (in egocentric x,y) to lidar ray indices.
-        angles = np.arctan2(traj_positions[:, :, 1], traj_positions[:, :, 0]) # Y is forward, X is right
-        angles_deg = np.rad2deg(angles)
+        Args:
+            trajectories: (N, H+1, 5) 궤적들
+            lidar_data: (240,) 라이다 데이터
+            goal_position: [x, y] 목표 위치 (ego 좌표계)
+            
+        Returns:
+            costs: (N,) 각 궤적의 비용
+        """
+        N = trajectories.shape[0]
+        costs = np.zeros(N)
         
-        # Convert angle (-180 to 180) to lidar index (0 to 239)
-        # Lidar Index 0 is front, 60 is right (-90 deg), 180 is left (90 deg)
-        lidar_indices = (240 - (angles_deg + 360) % 360) / 1.5
-        lidar_indices = np.floor(lidar_indices).astype(int) % self.num_lidar_rays
-
-        # Get the Lidar distances for the corresponding angles
-        obstacle_distances = lidar_scan[lidar_indices] * self.lidar_max_dist
-        
-        # Calculate distance of each point in the trajectory from the origin (ego vehicle)
-        point_distances = np.linalg.norm(traj_positions, axis=2)
-        
-        # A collision is imminent if a predicted point is further than the obstacle detected in that direction
-        # Add a cost that is high for close obstacles
-        is_collision = (point_distances > obstacle_distances)
-        
-        # We can make the cost proportional to how close the obstacle is
-        # (1.0 - lidar_scan) is 0 for no obstacle, 1 for obstacle at point blank
-        obstacle_cost_factor = (1.0 - lidar_scan[lidar_indices])
-        
-        # Sum cost over the horizon for each sample
-        total_obstacle_cost = np.sum(is_collision * obstacle_cost_factor, axis=1)
-        costs += self.W_OBSTACLE * total_obstacle_cost
+        for n in range(N):
+            traj = trajectories[n]
+            cost = 0.0
+            
+            for t in range(1, self.H + 1):
+                x, y, theta, vel, angular_vel = traj[t]
+                
+                # 1. 목표 추적 비용 (가장 중요)
+                goal_distance = np.sqrt((x - goal_position[0])**2 + (y - goal_position[1])**2)
+                cost += 10.0 * goal_distance
+                
+                # 2. 전진 장려 비용
+                cost -= 2.0 * vel if vel > 0 else 0.0
+                
+                # 3. 장애물 회피 비용 (간단한 근사)
+                # 라이다 데이터를 이용한 충돌 위험도 계산
+                collision_risk = self.calculate_collision_risk(x, y, theta, lidar_data)
+                cost += 50.0 * collision_risk
+                
+                # 4. 제어 입력 페널티 (부드러운 주행)
+                if t < self.H:
+                    steering = trajectories[n, t, 4] if t > 0 else 0  # angular_vel을 steering 근사로 사용
+                    cost += 0.1 * steering**2
+                
+                # 5. 차선 중앙 유지 비용 (y=0 근처 유지)
+                cost += 5.0 * y**2
+            
+            costs[n] = cost
         
         return costs
-
-    def update(self, target_pos, lidar_scan):
-        """
-        The main control loop for the MPPI controller.
-        
-        :param target_pos: The egocentric coordinates [x, y] of the target waypoint.
-        :param lidar_scan: The current Lidar observation.
-        :return: The optimal action [steering, throttle/brake].
-        """
-        K = self.K
-        H = self.H
-
-        # 1. Sample random action sequences
-        noise = np.random.normal(loc=0.0, scale=self.noise_std, size=(K, H, 2))
-        sampled_actions = self.nominal_actions + noise
-        
-        # Clip actions to be within valid range [-1, 1]
-        sampled_actions[:, :, 0] = np.clip(sampled_actions[:, :, 0], -1.0, 1.0) # Steering
-        sampled_actions[:, :, 1] = np.clip(sampled_actions[:, :, 1], -1.0, 1.0) # Acceleration/Brake
-
-        # 2. Roll out trajectories using the dynamics model
-        # All trajectories are simulated from the vehicle's current state in an egocentric frame
-        # So the initial state for all simulations is [0, 0, 0, current_speed]
-        current_speed_ms = self.agent.speed_km_h / 3.6
-        initial_state = np.array([0, 0, 0, current_speed_ms])
-        
-        trajectories = np.zeros((K, H, 4)) # (x, y, theta, speed)
-        current_states = np.tile(initial_state, (K, 1))
-
-        # Convert throttle/brake action to raw acceleration
-        accel_actions = np.zeros_like(sampled_actions[:, :, 1])
-        accel_actions[sampled_actions[:, :, 1] > 0] = sampled_actions[:, :, 1][sampled_actions[:, :, 1] > 0] * self.max_accel
-        accel_actions[sampled_actions[:, :, 1] < 0] = sampled_actions[:, :, 1][sampled_actions[:, :, 1] < 0] * self.max_brake
-        
-        sim_actions = np.stack([sampled_actions[:, :, 0], accel_actions], axis=-1)
-
-        for t in range(H):
-            current_states = self._dynamics_model(current_states.T, sim_actions[:, t, :].T).T
-            trajectories[:, t, :] = current_states
-
-        # 3. Compute costs for all trajectories
-        costs = self._compute_cost(trajectories, target_pos, lidar_scan)
-
-        # 4. Compute weights and find the optimal action
-        weights = np.exp(-1.0 / self.lambda_ * (costs - np.min(costs)))
-        weights /= np.sum(weights)
-
-        # Weighted average of the first action of each sequence
-        optimal_action = np.sum(weights[:, np.newaxis] * sampled_actions[:, 0, :], axis=0)
-
-        # 5. Update nominal actions for the next step (warm start)
-        self.nominal_actions = np.roll(self.nominal_actions, -1, axis=0)
-        self.nominal_actions[-1] = optimal_action # Use the new best action as the last nominal action
-        
-        return optimal_action
-
-# --- 설정 ---
-
-# Change 2: Simplified environment configuration to focus on state/Lidar data
-BASE_ENV_CFG = dict(
-    use_render=True,
-    map='X',
-    manual_control=False, # We are using the MPPI controller
-    crswalk_density=0.2,
-    object_density=0.2, # Added some objects for the Lidar to see
-    drivable_area_extension=55,
-    horizon=1000,
-    vehicle_config=dict(
-        enable_reverse=False,
-        # Use LidarStateObservation directly
-        show_lidar=True, # Visualize the lidar
-        lidar=dict(num_lasers=240, distance=50, num_others=0, gaussian_noise=0.0, dropout_prob=0.0),
-    ),
-    show_sidewalk=True,
-    show_crosswalk=True,
-    random_lane_width=True,
-    random_agent_model=True,
-    random_lane_num=True,
-    num_scenarios=100000,
-    accident_prob=0.0,
-    # Change 3: Set the observation type to LidarStateObservation
-    agent_observation=LidarStateObservation,
-    image_observation=False, # Disable image observation for performance
-    log_level=50,
-)
-
-# --- 유틸리티 함수 ---
-
-def convert_to_egocentric(global_target_pos, agent_pos, agent_heading):
-    vec_in_world = global_target_pos - agent_pos
-    theta = agent_heading # In MPPI we want to align with the agent's forward direction (y)
     
-    # We want to rotate so the agent's heading is aligned with the new Y-axis
-    # Standard rotation is counter-clockwise. agent_heading is also CCW from positive X-axis.
-    # To align world to ego, we must rotate clockwise by agent_heading.
-    # sin(-theta) = -sin(theta), cos(-theta) = cos(theta)
-    cos_h = np.cos(-theta)
-    sin_h = np.sin(-theta)
+    def calculate_collision_risk(self, x, y, theta, lidar_data):
+        """
+        라이다 데이터를 이용한 충돌 위험도 계산
+        
+        Args:
+            x, y, theta: 차량 위치와 방향
+            lidar_data: (240,) 라이다 거리 데이터
+            
+        Returns:
+            risk: 충돌 위험도 (0~1)
+        """
+        # 차량 전방과 측면의 라이다 빔들만 고려
+        front_indices = list(range(110, 130))  # 전방 20도 범위
+        left_indices = list(range(90, 110))    # 좌측
+        right_indices = list(range(130, 150))  # 우측
+        
+        # 예상 차량 위치에서의 장애물까지 거리 추정
+        min_safe_distance = 3.0
+        risk = 0.0
+        
+        # 전방 위험도 (가중치 높음)
+        front_distances = lidar_data[front_indices]
+        front_risk = np.sum(front_distances < min_safe_distance) / len(front_indices)
+        risk += 3.0 * front_risk
+        
+        # 측면 위험도
+        left_distances = lidar_data[left_indices]
+        right_distances = lidar_data[right_indices]
+        
+        left_risk = np.sum(left_distances < min_safe_distance/2) / len(left_indices)
+        right_risk = np.sum(right_distances < min_safe_distance/2) / len(right_indices)
+        
+        risk += 1.0 * (left_risk + right_risk)
+        
+        return np.clip(risk, 0.0, 1.0)
     
-    # Ego frame: Y is forward, X is right
-    ego_y = vec_in_world[0] * cos_h - vec_in_world[1] * sin_h
-    ego_x = vec_in_world[0] * sin_h + vec_in_world[1] * cos_h
-    return np.array([ego_x, ego_y])
-
-
-# --- 메인 실행 로직 ---
-
-env = SidewalkStaticMetaUrbanEnv(BASE_ENV_CFG)
-
-import random 
-
-running = True
-try:
-    for i in range(10):
-        # Change 4: obs is now a numpy array, not a dict
-        obs, info = env.reset(seed=i + 50)
+    def sample_control_sequences(self):
+        """
+        제어 시퀀스들을 샘플링 (가우시안 노이즈 + warm start)
         
-        # Instantiate the MPPI controller after reset to link it to the new agent
-        mppi_controller = MPPIController(env)
+        Returns:
+            u_sequences: (N, H, 2) 제어 시퀀스들
+        """
+        u_sequences = np.zeros((self.N, self.H, 2))
         
-        waypoints = env.agent.navigation.checkpoints
-        num_waypoints = len(waypoints)
-        k = 5 # Target the 5th waypoint ahead
-
-
-        waypoints = env.agent.navigation.checkpoints 
-        print('wayppoint num: ',len(waypoints))
-        
-        reset = i+2000 
-        while len(waypoints)<30:
-            obs,info = env.reset(seed= reset)
-            reset = random.randint(1,40000)
-            waypoints = env.agent.navigation.checkpoints 
-            print('i do not have sufficient waypoints ',i,' th')
-            print(len(waypoints))
-            
-        num_waypoints = len(waypoints)
-
-        
-        
-        while running:
-            # Get target waypoint
-            global_target = waypoints[min(k, num_waypoints - 1)]
-            agent_pos = env.agent.position
-            agent_heading = env.agent.heading_theta
-            
-            # Convert target to egocentric coordinates for the controller
-            ego_goal_position = convert_to_egocentric(global_target, agent_pos, agent_heading)
-            
-            # Extract Lidar data from the observation vector
-            # As per LidarStateObservation, the last 240 elements are the lidar points
-            lidar_scan = obs[-mppi_controller.num_lidar_rays:]
-            
-            # Get action from MPPI controller
-            action = mppi_controller.update(ego_goal_position, lidar_scan)
-            
-            # Update target waypoint if we get close
-            distance_to_target = np.linalg.norm(ego_goal_position)
-            if distance_to_target < 5.0 and k < num_waypoints - 1:
-                k += 1
-
-            # Step the environment
-            obs, reward, terminated, truncated, info = env.step(action)
-            
-            # Environment rendering
-            env.render(
-                text={
-                    "Ego Goal (local)": np.round(ego_goal_position, 2),
-                    "Action": np.round(action, 2),
-                    "Target Waypoint": f"{k}/{num_waypoints}",
-                    "Reward": f"{reward:.2f}",
-                }
-            )
-
-
-            # if terminated or truncated:
-            #     print(f"Episode finished. Terminated: {terminated}, Truncated: {truncated}")
-            #     break
+        for n in range(self.N):
+            for t in range(self.H):
+                # 이전 해에 노이즈를 추가 (warm start)
+                if t < len(self.prev_u_seq):
+                    base_u = self.prev_u_seq[t]
+                else:
+                    base_u = np.array([0.0, 0.3])  # 기본값: 직진, 적당한 속도
                 
-
-finally:
-    env.close()
+                # 가우시안 노이즈 추가
+                noise = np.random.multivariate_normal([0, 0], self.sigma)
+                u_sequences[n, t] = np.clip(base_u + noise, self.u_min, self.u_max)
+        
+        return u_sequences
+    
+    def path_integral_update(self, costs, u_sequences):
+        """
+        Path Integral을 이용한 제어 시퀀스 업데이트
+        
+        Args:
+            costs: (N,) 각 궤적의 비용
+            u_sequences: (N, H, 2) 제어 시퀀스들
+            
+        Returns:
+            optimal_u_seq: (H, 2) 최적 제어 시퀀스
+        """
+        # 비용을 음수로 변환하고 정규화 (낮은 비용 = 높은 가중치)
+        min_cost = np.min(costs)
+        weights = np.exp(-(costs - min_cost) / self.lambda_)
+        weights = weights / np.sum(weights)
+        
+        # 가중 평균으로 최적 제어 시퀀스 계산
+        optimal_u_seq = np.zeros((self.H, 2))
+        for t in range(self.H):
+            optimal_u_seq[t] = np.sum(weights[:, np.newaxis] * u_sequences[:, t, :], axis=0)
+        
+        return optimal_u_seq
+    
+    def optimize(self, current_state, lidar_data, goal_position):
+        """
+        MPPI 최적화 수행
+        
+        Args:
+            current_state: [x, y, theta, velocity, angular_velocity]
+            lidar_data: (240,) 라이다 데이터
+            goal_position: [x, y] 목표 위치 (ego 좌표계)
+            
+        Returns:
+            optimal_action: [steering, throttle] 최적 제어 입력
+            proximal_goal: [x, y] 단기 목표 위치
+        """
+        # 1. 제어 시퀀스 샘플링
+        u_sequences = self.sample_control_sequences()
+        
+        # 2. 동역학 시뮬레이션
+        trajectories = self.rollout_dynamics(current_state, u_sequences)
+        
+        # 3. 비용 계산
+        costs = self.cost_function(trajectories, lidar_data, goal_position)
+        
+        # 4. Path Integral 업데이트
+        optimal_u_seq = self.path_integral_update(costs, u_sequences)
+        
+        # 5. 다음 반복을 위해 최적 시퀀스 저장 (shift + padding)
+        self.prev_u_seq[:-1] = optimal_u_seq[1:]
+        self.prev_u_seq[-1] = optimal_u_seq[-1]  # 마지막 제어 입력으로 패딩
+        
+        # 6. 최적 궤적에서 단기 목표 위치 추출 (k번째 시점)
+        best_traj_idx = np.argmin(costs)
+        best_trajectory = trajectories[best_traj_idx]
+        
+        k = min(5, self.H)  # 5 스텝 앞 또는 지평선 끝
+        proximal_goal = best_trajectory[k, :2]  # [x, y]만 추출
+        
+        return optimal_u_seq[0], proximal_goal

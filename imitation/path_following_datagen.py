@@ -1,3 +1,4 @@
+# path_following_datagen.py
 import numpy as np
 import os
 from metaurban.envs import SidewalkStaticMetaUrbanEnv
@@ -16,8 +17,15 @@ from utils import PD_Controller,convert_to_egocentric
 pd_controller = PD_Controller(kp=0.2,kd=0.0) # 제일 안정적임을 확인 
 
 # 데이터셋 수집기 초기화
-from walle_dataset import ImitationDatasetCollector
+# from walle_dataset import ImitationDatasetCollector
+# collector = ImitationDatasetCollector("imitation_dataset")
+
+# 개선된 데이터셋 수집기 import
+from improved_walle_dataset import ImitationDatasetCollector
+# 데이터셋 수집기 초기화
 collector = ImitationDatasetCollector("imitation_dataset")
+
+
 
 # --- 메인 실행 로직 ---
 # env = SidewalkStaticMetaUrbanEnv(BASE_ENV_CFG)
@@ -95,15 +103,8 @@ try:
             # 선택된 액션으로 환경을 한 스텝 진행
             obs, reward, terminated, truncated, info = env.step(action)
 
-            # 일정이상 시간동안 끼어서 안움직이면 종료. 
-            if step-stuck_interval > 0:
-                future_agent_pos = env.agent.position
-                length = np.linalg.norm(future_agent_pos-start_position)
-                if length <1:
-                    break
-                else:
-                    start_position= future_agent_pos
-                    stuck_interval+=10
+            if step>10:
+                breakpoint()
             
             # 환경 렌더링 및 정보 표시
             env.render(
@@ -125,21 +126,26 @@ try:
                     "episode_length": step,
                     "success": reward > 0.5  # 성공 기준
                 }
+                break
             
             step+=1 
-            
+        
+        print(step)
         # 에피소드 하나 종료 및 시작 
         collector.finish_episode(episode_info)
 
-        # 데이터셋 정보 저장
-        collector.save_dataset_info()
-        collector.create_train_test_split()
         
-        print(f"\nDataset collection completed!")
-        print(f"Total episodes: {collector.episode_counter}")
-        print(f"Total samples: {collector.dataset_info['total_samples']}")
-        print(f"Dataset saved to: {collector.dataset_root}")
+        # 각 에피소드의 길이가 64 이상이면 저장.
+        if step > 64: 
+            # 데이터셋 정보 저장
+            collector.save_dataset_info()
+            collector.create_train_test_split()
         
+            print(f"\nDataset collection completed!")
+            print(f"Total episodes: {collector.episode_counter}")
+            print(f"Total samples: {collector.dataset_info['total_samples']}")
+            print(f"Dataset saved to: {collector.dataset_root}")
+            
         print(episode,': episode end ')
 
 finally:
@@ -270,10 +276,8 @@ class TransitionDataset(Dataset):
 
 # 가변 에피소드 처리
 def collate_episodes(batch):
-    """
     batch: list of episodes. Each episode is a list of dicts (one per timestep)
     Returns: padded tensors or batched sequences
-    """
     batch_data = []
     for episode in batch:
         frames = episode["episode"]

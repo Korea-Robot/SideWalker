@@ -6,6 +6,7 @@ checkpoints/
 *.packaging
 *.png
 *.jpg 
+*.json
 
 */wandb/
 
