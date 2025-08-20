@@ -16,7 +16,7 @@ import torch
 
 from utils import PD_Controller,convert_to_egocentric
 ## PD controller 생성
-pd_controller = PD_Controller(kp=0.2,kd=0.0) # 제일 안정적임을 확인 
+pd_controller = PD_Controller(kp=2.0,kd=0.0) # 제일 안정적임을 확인 
 
 # =================== Utilities for planning ===================
 import math
@@ -27,48 +27,121 @@ import math
 import heapq
 from collections import deque
 
-def build_occupancy_from_tdsm_colors(tdsm_bgr, tol=10, k_close=5, k_open=3, inflation_radius=15):
+# def build_occupancy_from_tdsm_colors(tdsm_bgr, tol=10, k_close=5, k_open=3, inflation_radius=15):
+#     """
+#     더 관대한 색상 매칭과 더 강한 morphology 연산으로 occupancy map 생성
+#     inflation_radius를 추가하여 장애물 주변에 안전 버퍼 생성
+#     """
+#     H, W = tdsm_bgr.shape[:2]
+#     img = tdsm_bgr.astype(np.int16)
+    
+#     # 주행 가능 영역 색상들 (더 넓은 범위로 설정)
+#     free_colors = [
+#         np.array([244, 35, 232], dtype=np.int16),  # pink/magenta
+#         np.array([55, 176, 189], dtype=np.int16),  # yellow
+#         np.array([0, 0, 142], dtype=np.int16),  # ego robot
+#         # np.array([128, 64, 128], dtype=np.int16),  # 추가 도로색 (회색)
+#     ]
+    
+#     free_mask = np.zeros((H, W), dtype=bool)
+    
+#     for color in free_colors:
+#         mask = np.all(np.abs(img - color.reshape(1,1,3)) <= tol, axis=2)
+#         free_mask |= mask
+    
+#     free = free_mask.astype(np.uint8)
+    
+#     # 더 강한 morphology 연산으로 연결성 개선
+#     if k_close > 0:
+#         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_close, k_close))
+#         free = cv2.morphologyEx(free, cv2.MORPH_CLOSE, kernel, iterations=2)
+    
+#     if k_open > 0:
+#         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_open, k_open))
+#         free = cv2.morphologyEx(free, cv2.MORPH_OPEN, kernel)
+    
+#     # 기본 occupancy map 생성
+#     occ = (1 - free).astype(np.uint8)  # 0=free, 1=obstacle
+    
+#     # **INFLATION LAYER 추가** - 장애물 주변에 안전 버퍼 생성
+#     if inflation_radius > 0:
+#         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, 
+#                                          (2*inflation_radius+1, 2*inflation_radius+1))
+#         occ_inflated = cv2.dilate(occ, kernel, iterations=1)
+        
+#         # inflation으로 인해 줄어든 자유공간을 다시 계산
+#         free_inflated = (1 - occ_inflated).astype(np.uint8)
+#     else:
+#         occ_inflated = occ
+#         free_inflated = free
+    
+#     return occ_inflated, free_inflated
+
+
+def build_occupancy_from_tdsm_colors(
+    tdsm_bgr, 
+    tol=10, 
+    k_close=5, 
+    k_open=3, 
+    inflation_radius=25,
+    # --- 횡단보도 처리를 위한 인자 추가 ---
+    crosswalk_color=np.array([55, 176, 189], dtype=np.int16), # 횡단보도 색상 (기본값: 흰색)
+    crosswalk_expansion_radius=20 # 횡단보도 확장 반경
+    ):
     """
-    더 관대한 색상 매칭과 더 강한 morphology 연산으로 occupancy map 생성
-    inflation_radius를 추가하여 장애물 주변에 안전 버퍼 생성
+    TDSM 이미지로부터 Occupancy Map을 생성합니다.
+    - 일반 장애물 주변에 inflation_radius를 적용하여 안전 버퍼를 생성합니다.
+    - 횡단보도 영역은 crosswalk_expansion_radius만큼 팽창시켜 주행 가능 영역을 넓힙니다.
     """
     H, W = tdsm_bgr.shape[:2]
     img = tdsm_bgr.astype(np.int16)
     
-    # 주행 가능 영역 색상들 (더 넓은 범위로 설정)
+    # 주행 가능 영역 색상들
     free_colors = [
-        np.array([244, 35, 232], dtype=np.int16),  # pink/magenta
-        np.array([55, 176, 189], dtype=np.int16),  # yellow
-        # np.array([128, 64, 128], dtype=np.int16),  # 추가 도로색 (회색)
+        np.array([244, 35, 232], dtype=np.int16),  # side walk
+        # np.array([55, 176, 189], dtype=np.int16), # cross walk
+        np.array([0, 0, 142], dtype=np.int16),    # ego robot
     ]
     
+    # 1. 기본 주행 가능 영역 마스크 생성
     free_mask = np.zeros((H, W), dtype=bool)
-    
     for color in free_colors:
         mask = np.all(np.abs(img - color.reshape(1,1,3)) <= tol, axis=2)
         free_mask |= mask
-    
+        
+    # ** --- 횡단보도 영역 확장 로직 추가 --- **
+    if crosswalk_expansion_radius > 0 and crosswalk_color is not None:
+        # 2. 횡단보도 영역 마스크 생성
+        crosswalk_mask = np.all(np.abs(img - crosswalk_color.reshape(1,1,3)) <= tol, axis=2)
+        
+        # 3. 횡단보도 마스크를 팽창(dilate)시켜 영역을 넓힘
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, 
+                                          (2*crosswalk_expansion_radius+1, 2*crosswalk_expansion_radius+1))
+        # uint8 타입으로 변환 후 dilate 적용
+        expanded_crosswalk_mask = cv2.dilate(crosswalk_mask.astype(np.uint8), kernel, iterations=1)
+        
+        # 4. 확장된 횡단보도 마스크를 기본 주행 가능 영역에 통합
+        free_mask |= (expanded_crosswalk_mask > 0) # boolean 마스크로 다시 변환하여 합침
+
+    # 5. 최종 free space 마스크에 Morphology 연산 적용
     free = free_mask.astype(np.uint8)
     
-    # 더 강한 morphology 연산으로 연결성 개선
     if k_close > 0:
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_close, k_close))
-        free = cv2.morphologyEx(free, cv2.MORPH_CLOSE, kernel, iterations=2)
+        kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_close, k_close))
+        free = cv2.morphologyEx(free, cv2.MORPH_CLOSE, kernel_close, iterations=2)
     
     if k_open > 0:
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_open, k_open))
-        free = cv2.morphologyEx(free, cv2.MORPH_OPEN, kernel)
+        kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_open, k_open))
+        free = cv2.morphologyEx(free, cv2.MORPH_OPEN, kernel_open)
     
-    # 기본 occupancy map 생성
-    occ = (1 - free).astype(np.uint8)  # 0=free, 1=obstacle
+    # 6. 기본 Occupancy Map 생성 (장애물=1, 주행가능=0)
+    occ = (1 - free).astype(np.uint8)
     
-    # **INFLATION LAYER 추가** - 장애물 주변에 안전 버퍼 생성
+    # 7. 장애물 영역에 Inflation Layer 적용 (안전 버퍼)
     if inflation_radius > 0:
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, 
-                                         (2*inflation_radius+1, 2*inflation_radius+1))
-        occ_inflated = cv2.dilate(occ, kernel, iterations=1)
-        
-        # inflation으로 인해 줄어든 자유공간을 다시 계산
+        kernel_inflate = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, 
+                                             (2*inflation_radius+1, 2*inflation_radius+1))
+        occ_inflated = cv2.dilate(occ, kernel_inflate, iterations=1)
         free_inflated = (1 - occ_inflated).astype(np.uint8)
     else:
         occ_inflated = occ
@@ -301,10 +374,10 @@ def process_semantic_map_and_plan(tdsm_bgr, ego_goal_position, inflation_radius=
     return vis, path, local_target_ego
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--out_dir", type=str, default="saved_imgs")
+parser.add_argument("--out_dir", type=str, default="saved_imgs_minimal")
 parser.add_argument("--show_vis", action="store_true", default=True, help="Show real-time visualization")
 parser.add_argument("--save_images", action="store_true", default=False, help="Save visualization images")
-parser.add_argument("--inflation_radius", type=int, default=15, help="Obstacle inflation radius in pixels")
+parser.add_argument("--inflation_radius", type=int, default=25, help="Obstacle inflation radius in pixels")
 args = parser.parse_args()
 
 if args.save_images:

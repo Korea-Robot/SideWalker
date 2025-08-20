@@ -14,11 +14,18 @@ import argparse
 import torch
 
 
-from utils import PD_Controller,convert_to_egocentric
+
+# ======================================================================================
+# 사용자 정의 유틸리티 및 클래스
+# PD_Controller: 비례-미분 제어기. 목표 지점과의 오차를 기반으로 조향각을 계산합니다.
+# convert_to_egocentric: 전역 좌표를 에이전트 중심의 지역 좌표로 변환합니다.
+# ======================================================================================
+from utils import PD_Controller, convert_to_egocentric
+
 ## PD controller 생성
 pd_controller = PD_Controller(kp=0.2,kd=0.0) # 제일 안정적임을 확인 
 
-# =================== Utilities for planning ===================
+
 import math
 from collections import deque
 
@@ -29,20 +36,34 @@ import math
 import heapq
 from collections import deque
 
+
+# ======================================================================================
+# Planning Utilities: 경로 계획을 위한 함수들
+# ======================================================================================
+
+
 def build_occupancy_from_tdsm_colors(tdsm_bgr, tol=10, k_close=5, k_open=3):
     """
     더 관대한 색상 매칭과 더 강한 morphology 연산으로 occupancy map 생성
     """
     H, W = tdsm_bgr.shape[:2]
     img = tdsm_bgr.astype(np.int16)
+
+
+    # --- 중앙 픽셀 색상 확인 코드 (여기에 추가) ---
+    center_y, center_x = H // 2, W // 2
+    center_pixel_color = tdsm_bgr[center_y, center_x]
+    print(f"이미지 중앙 (y:{center_y}, x:{center_x})의 BGR 색상: {center_pixel_color}")
+    # -----------------------------------------
     
+        
     # 주행 가능 영역 색상들 (더 넓은 범위로 설정)
     # Pink/Magenta: BGR=(244,35,232) - 도로
     # Yellow: BGR=(55,176,189) - 인도/보행로
     free_colors = [
         np.array([244, 35, 232], dtype=np.int16),  # pink/magenta
         np.array([55, 176, 189], dtype=np.int16),  # yellow
-        np.array([128, 64, 128], dtype=np.int16),  # 추가 도로색 (회색)
+        np.array([0, 0, 142], dtype=np.int16),  # ego robot
     ]
     
     free_mask = np.zeros((H, W), dtype=bool)
@@ -66,8 +87,78 @@ def build_occupancy_from_tdsm_colors(tdsm_bgr, tol=10, k_close=5, k_open=3):
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     free = cv2.dilate(free, kernel, iterations=1)
     
-    occ = (1 - free).astype(np.uint8)  # 0=free, 1=obstacle
-    return occ, free
+    occ = (1 - free).astype(np.uint8)  # 0=free, 1=obstacle # (512,512)
+    # cv2.dilate 연산을 사용해 장애물 영역(값이 1인 부분)을 확장합니다.
+    # 이를 통해 A* 알고리즘이 장애물로부터 안전 거리를 확보한 경로를 생성하게 됩니다.
+    
+    inflation_radius = 40
+    if inflation_radius > 0:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (inflation_radius*2+1, inflation_radius*2+1))
+        inf_occ = cv2.dilate(occ, kernel)
+        
+    # breakpoint()
+    
+    free = (1 - occ).astype(np.uint8)
+    
+    
+    return inf_occ,free
+    # return occ, free
+
+# def build_occupancy_from_tdsm_colors(tdsm_bgr, tol=10, k_close=5, k_open=3, inflation_radius=5):
+#     """
+#     Top-Down Semantic Map(TDSM)으로부터 Occupancy Grid(점유 격자)를 생성합니다.
+#     이 함수는 주행 가능 영역과 장애물 영역을 구분하고, 장애물 주변에 안전 마진(Inflation)을 추가합니다.
+
+#     Args:
+#         tdsm_bgr (np.array): BGR 색상 채널의 Top-Down Semantic Map 이미지.
+#         inflation_radius (int): 장애물 영역을 확장할 반경 (픽셀 단위). 클수록 장애물과 더 멀리 떨어집니다.
+#         tol (int): 색상 값을 비교할 때의 허용 오차.
+#         k_close (int): Closing 연산에 사용할 커널 크기. 작은 구멍을 메웁니다.
+#         k_open (int): Opening 연산에 사용할 커널 크기. 작은 노이즈를 제거합니다.
+
+#     Returns:
+#         occ (np.array): Occupancy Grid. 0은 주행 가능, 1은 장애물을 의미합니다.
+#         free (np.array): 주행 가능 영역 마스크. 1은 주행 가능, 0은 비주행 영역입니다.
+#     """
+#     H, W = tdsm_bgr.shape[:2]
+#     img = tdsm_bgr.astype(np.int16)
+
+#     # MetaUrban의 TDSM에서 주행 가능 영역을 나타내는 색상들 (BGR 순서)
+#     # Pink/Magenta: BGR=(244, 35, 232) -> 보행로
+#     # Yellow: BGR=(55, 176, 189) -> 횡단보도
+#     free_colors = [
+#         np.array([244, 35, 232], dtype=np.int16),  # 보행로
+#         np.array([55, 176, 189], dtype=np.int16),  # 횡단보도
+#     ]
+
+#     # 주행 가능 영역을 나타내는 마스크를 생성합니다.
+#     free_mask = np.zeros((H, W), dtype=bool)
+#     for color in free_colors:
+#         mask = np.all(np.abs(img - color.reshape(1, 1, 3)) <= tol, axis=2)
+#         free_mask |= mask
+
+#     free = free_mask.astype(np.uint8)
+
+#     # Morphology 연산을 통해 주행 가능 영역의 노이즈를 제거하고 연결성을 강화합니다.
+#     if k_close > 0:
+#         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_close, k_close))
+#         free = cv2.morphologyEx(free, cv2.MORPH_CLOSE, kernel, iterations=2)
+#     if k_open > 0:
+#         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_open, k_open))
+#         free = cv2.morphologyEx(free, cv2.MORPH_OPEN, kernel)
+
+#     # Occupancy Grid 생성: 0은 주행 가능(free), 1은 장애물(obstacle)
+#     occ = (1 - free).astype(np.uint8)
+
+#     # =================== 핵심 개선 사항: Inflation Layer 추가 ===================
+#     # cv2.dilate 연산을 사용해 장애물 영역(값이 1인 부분)을 확장합니다.
+#     # 이를 통해 A* 알고리즘이 장애물로부터 안전 거리를 확보한 경로를 생성하게 됩니다.
+#     if inflation_radius > 0:
+#         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (inflation_radius*2+1, inflation_radius*2+1))
+#         occ = cv2.dilate(occ, kernel)
+#     # =========================================================================
+#     return occ, free
+
 
 def estimate_px_per_meter(img_h, cam_height_m=10.0, fov_deg=90.0):
     """픽셀 당 미터 변환 계수 계산"""
@@ -312,7 +403,7 @@ def process_semantic_map_and_plan(tdsm_bgr, ego_goal_position, save_path=None):
     return vis, path, local_target_ego
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--out_dir", type=str, default="saved_imgs")
+parser.add_argument("--out_dir", type=str, default="saved_imgs_simple")
 args = parser.parse_args()
 os.makedirs(args.out_dir, exist_ok=True)
 

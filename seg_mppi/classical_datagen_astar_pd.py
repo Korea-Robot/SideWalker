@@ -241,7 +241,7 @@ config = dict(
 )
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--out_dir", type=str, default="saved_imgs")
+parser.add_argument("--out_dir", type=str, default="saved_imgs_origin")
 args = parser.parse_args()
 os.makedirs(args.out_dir, exist_ok=True)
 
