@@ -1,4 +1,6 @@
 from metaurban import SidewalkStaticMetaUrbanEnv
+from metaurban.envs import SidewalkDynamicMetaUrbanEnv
+
 from metaurban.constants import HELP_MESSAGE
 import cv2
 import os
@@ -26,57 +28,6 @@ import cv2
 import math
 import heapq
 from collections import deque
-
-# def build_occupancy_from_tdsm_colors(tdsm_bgr, tol=10, k_close=5, k_open=3, inflation_radius=15):
-#     """
-#     더 관대한 색상 매칭과 더 강한 morphology 연산으로 occupancy map 생성
-#     inflation_radius를 추가하여 장애물 주변에 안전 버퍼 생성
-#     """
-#     H, W = tdsm_bgr.shape[:2]
-#     img = tdsm_bgr.astype(np.int16)
-    
-#     # 주행 가능 영역 색상들 (더 넓은 범위로 설정)
-#     free_colors = [
-#         np.array([244, 35, 232], dtype=np.int16),  # pink/magenta
-#         np.array([55, 176, 189], dtype=np.int16),  # yellow
-#         np.array([0, 0, 142], dtype=np.int16),  # ego robot
-#         # np.array([128, 64, 128], dtype=np.int16),  # 추가 도로색 (회색)
-#     ]
-    
-#     free_mask = np.zeros((H, W), dtype=bool)
-    
-#     for color in free_colors:
-#         mask = np.all(np.abs(img - color.reshape(1,1,3)) <= tol, axis=2)
-#         free_mask |= mask
-    
-#     free = free_mask.astype(np.uint8)
-    
-#     # 더 강한 morphology 연산으로 연결성 개선
-#     if k_close > 0:
-#         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_close, k_close))
-#         free = cv2.morphologyEx(free, cv2.MORPH_CLOSE, kernel, iterations=2)
-    
-#     if k_open > 0:
-#         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_open, k_open))
-#         free = cv2.morphologyEx(free, cv2.MORPH_OPEN, kernel)
-    
-#     # 기본 occupancy map 생성
-#     occ = (1 - free).astype(np.uint8)  # 0=free, 1=obstacle
-    
-#     # **INFLATION LAYER 추가** - 장애물 주변에 안전 버퍼 생성
-#     if inflation_radius > 0:
-#         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, 
-#                                          (2*inflation_radius+1, 2*inflation_radius+1))
-#         occ_inflated = cv2.dilate(occ, kernel, iterations=1)
-        
-#         # inflation으로 인해 줄어든 자유공간을 다시 계산
-#         free_inflated = (1 - occ_inflated).astype(np.uint8)
-#     else:
-#         occ_inflated = occ
-#         free_inflated = free
-    
-#     return occ_inflated, free_inflated
-
 
 def build_occupancy_from_tdsm_colors(
     tdsm_bgr, 
@@ -126,13 +77,15 @@ def build_occupancy_from_tdsm_colors(
     # 5. 최종 free space 마스크에 Morphology 연산 적용
     free = free_mask.astype(np.uint8)
     
-    if k_close > 0:
-        kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_close, k_close))
-        free = cv2.morphologyEx(free, cv2.MORPH_CLOSE, kernel_close, iterations=2)
+    # 확장 등등 
     
-    if k_open > 0:
-        kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_open, k_open))
-        free = cv2.morphologyEx(free, cv2.MORPH_OPEN, kernel_open)
+    # if k_close > 0:
+    #     kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_close, k_close))
+    #     free = cv2.morphologyEx(free, cv2.MORPH_CLOSE, kernel_close, iterations=2)
+    
+    # if k_open > 0:
+    #     kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_open, k_open))
+    #     free = cv2.morphologyEx(free, cv2.MORPH_OPEN, kernel_open)
     
     # 6. 기본 Occupancy Map 생성 (장애물=1, 주행가능=0)
     occ = (1 - free).astype(np.uint8)
@@ -373,6 +326,70 @@ def process_semantic_map_and_plan(tdsm_bgr, ego_goal_position, inflation_radius=
     
     return vis, path, local_target_ego
 
+def pick_goal_on_free_mask(
+    tdsm_bgr,
+    waypoints, 
+    k, 
+    agent_pos, 
+    agent_heading, 
+    tol=10, 
+    k_close=5, 
+    k_open=3, 
+    inflation_radius=25,
+    cam_height_m=10.0, 
+    fov_deg=90.0
+):
+    """
+    Return (chosen_idx, ego_goal_position, goal_rc) where:
+      - chosen_idx: index of the chosen waypoint (>= k) that lies on free space, or k if none
+      - ego_goal_position: [x_fwd, y_left] of the chosen waypoint in ego frame
+      - goal_rc: (row, col) pixel coordinates of the chosen waypoint (for debugging/visualization)
+
+    We recompute free_mask locally to test feasibility. This is cheap and keeps the selection local.
+    """
+    H, W = tdsm_bgr.shape[:2]
+
+    # 1) Build occupancy & free mask using the SAME parameters as planning
+    occ, free_mask = build_occupancy_from_tdsm_colors(
+        tdsm_bgr, tol=tol, k_close=k_close, k_open=k_open, inflation_radius=inflation_radius
+    )
+
+    # 2) Pixel-per-meter conversion (consistent with your planner)
+    px_per_m = estimate_px_per_meter(img_h=H, cam_height_m=cam_height_m, fov_deg=fov_deg)
+
+    # 3) Search from k to the end for a waypoint that lands in free space
+    chosen_idx = k
+    chosen_ego = None
+    chosen_rc = None
+
+    for j in range(k, len(waypoints)):
+        global_target = waypoints[j]
+        ego_goal = convert_to_egocentric(global_target, agent_pos, agent_heading)
+        r, c = ego_to_pixel(ego_goal, px_per_m, H, W)
+
+        # Clip to image bounds for safety
+        r = int(np.clip(r, 0, H - 1))
+        c = int(np.clip(c, 0, W - 1))
+
+        # Check if this pixel is free (0 in occ, or 1 in free_mask)
+        if free_mask[r, c] == 1 and occ[r, c] == 0:
+            chosen_idx = j
+            chosen_ego = np.asarray(ego_goal, dtype=np.float32)
+            chosen_rc = (r, c)
+            break
+
+    # 4) If none were free, fall back to original k
+    if chosen_ego is None:
+        global_target = waypoints[k]
+        chosen_ego = convert_to_egocentric(global_target, agent_pos, agent_heading)
+        r, c = ego_to_pixel(chosen_ego, px_per_m, H, W)
+        r = int(np.clip(r, 0, H - 1))
+        c = int(np.clip(c, 0, W - 1))
+        chosen_rc = (r, c)
+
+    return chosen_idx, chosen_ego, chosen_rc
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--out_dir", type=str, default="saved_imgs_minimal")
 parser.add_argument("--show_vis", action="store_true", default=True, help="Show real-time visualization")
@@ -390,9 +407,13 @@ collector = ImitationDatasetCollector("imitation_dataset")
 running = True
 episode = 3
 
-from semantic_env_config import EnvConfig
+# from semantic_env_config import EnvConfig
+
+from dynamic_env import EnvConfig
 env_config = EnvConfig()
-env = SidewalkStaticMetaUrbanEnv(env_config.base_env_cfg)
+
+# env = SidewalkStaticMetaUrbanEnv(env_config.base_env_cfg)
+env = SidewalkDynamicMetaUrbanEnv(env_config.base_env_cfg)
 
 try:
     for i in range(100000):
@@ -440,11 +461,31 @@ try:
                 
                 tdsm_bgr = (top_down_semantic_map[..., ::-1] * 255).astype(np.uint8)
                 
-                # 목표 설정
-                waypoints = env.agent.navigation.checkpoints 
-                global_target = waypoints[k]
+                
+                # 목표 설정 (free_mask를 고려)
+                waypoints = env.agent.navigation.checkpoints
                 agent_pos = env.agent.position
                 agent_heading = env.agent.heading_theta
+
+                # Use the same inflation radius you pass to the planner (args.inflation_radius)
+                chosen_idx, ego_goal_position, goal_rc = pick_goal_on_free_mask(
+                    tdsm_bgr,
+                    waypoints,
+                    k,
+                    agent_pos,
+                    agent_heading,
+                    tol=10,
+                    k_close=5,
+                    k_open=3,
+                    inflation_radius=args.inflation_radius,  # keep consistent with planner
+                    cam_height_m=10.0,
+                    fov_deg=90.0
+                )
+
+                # If you want, advance k when the chosen index moves forward
+                k = max(k, chosen_idx)
+                
+                global_target = waypoints[k]
                 
                 ego_goal_position = convert_to_egocentric(global_target, agent_pos, agent_heading)
                 
