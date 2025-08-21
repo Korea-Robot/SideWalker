@@ -1,0 +1,641 @@
+from metaurban import SidewalkStaticMetaUrbanEnv
+from metaurban.envs import SidewalkDynamicMetaUrbanEnv
+
+from metaurban.constants import HELP_MESSAGE
+import cv2
+import os
+import numpy as np
+from metaurban.component.sensors.rgb_camera import RGBCamera
+from metaurban.component.sensors.depth_camera import DepthCamera
+from metaurban.constants import HELP_MESSAGE
+from metaurban.obs.state_obs import LidarStateObservation
+from metaurban.component.sensors.semantic_camera import SemanticCamera
+from metaurban.obs.mix_obs import ThreeSourceMixObservation
+from metaurban.obs.image_obs import ImageObservation, ImageStateObservation
+import argparse
+import torch
+
+
+from metaurban.examples.utils import PD_Controller,convert_to_egocentric
+## PD controller 생성
+pd_controller = PD_Controller(kp=2.0,kd=0.0) # 제일 안정적임을 확인 
+
+# =================== Utilities for planning ===================
+import math
+from collections import deque
+import numpy as np
+import cv2
+import math
+import heapq
+from collections import deque
+
+# def build_occupancy_from_tdsm_colors(
+#     tdsm_bgr, 
+#     tol=10, 
+#     k_close=5, 
+#     k_open=3, 
+#     inflation_radius=25,
+#     # --- 횡단보도 처리를 위한 인자 추가 ---
+#     crosswalk_color=np.array([55, 176, 189], dtype=np.int16), # 횡단보도 색상 (기본값: 흰색)
+#     crosswalk_expansion_radius=20 # 횡단보도 확장 반경
+#     ):
+#     """
+#     TDSM 이미지로부터 Occupancy Map을 생성합니다.
+#     - 일반 장애물 주변에 inflation_radius를 적용하여 안전 버퍼를 생성합니다.
+#     - 횡단보도 영역은 crosswalk_expansion_radius만큼 팽창시켜 주행 가능 영역을 넓힙니다.
+#     """
+#     H, W = tdsm_bgr.shape[:2]
+#     img = tdsm_bgr.astype(np.int16)
+    
+#     # 주행 가능 영역 색상들
+#     free_colors = [
+#         np.array([244, 35, 232], dtype=np.int16),  # side walk
+#         # np.array([55, 176, 189], dtype=np.int16), # cross walk
+#         np.array([0, 0, 142], dtype=np.int16),    # ego robot
+#     ]
+    
+#     # 1. 기본 주행 가능 영역 마스크 생성
+#     free_mask = np.zeros((H, W), dtype=bool)
+#     for color in free_colors:
+#         mask = np.all(np.abs(img - color.reshape(1,1,3)) <= tol, axis=2)
+#         free_mask |= mask
+        
+#     # ** --- 횡단보도 영역 확장 로직 추가 --- **
+#     if crosswalk_expansion_radius > 0 and crosswalk_color is not None:
+#         # 2. 횡단보도 영역 마스크 생성
+#         crosswalk_mask = np.all(np.abs(img - crosswalk_color.reshape(1,1,3)) <= tol, axis=2)
+        
+#         # 3. 횡단보도 마스크를 팽창(dilate)시켜 영역을 넓힘
+#         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, 
+#                                           (2*crosswalk_expansion_radius+1, 2*crosswalk_expansion_radius+1))
+#         # uint8 타입으로 변환 후 dilate 적용
+#         expanded_crosswalk_mask = cv2.dilate(crosswalk_mask.astype(np.uint8), kernel, iterations=1)
+        
+#         # 4. 확장된 횡단보도 마스크를 기본 주행 가능 영역에 통합
+#         free_mask |= (expanded_crosswalk_mask > 0) # boolean 마스크로 다시 변환하여 합침
+
+#     # 5. 최종 free space 마스크에 Morphology 연산 적용
+#     free = free_mask.astype(np.uint8)
+    
+#     # 확장 등등 
+    
+#     # if k_close > 0:
+#     #     kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_close, k_close))
+#     #     free = cv2.morphologyEx(free, cv2.MORPH_CLOSE, kernel_close, iterations=2)
+    
+#     # if k_open > 0:
+#     #     kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_open, k_open))
+#     #     free = cv2.morphologyEx(free, cv2.MORPH_OPEN, kernel_open)
+    
+#     # 6. 기본 Occupancy Map 생성 (장애물=1, 주행가능=0)
+#     occ = (1 - free).astype(np.uint8)
+    
+#     # 7. 장애물 영역에 Inflation Layer 적용 (안전 버퍼)
+#     if inflation_radius > 0:
+#         kernel_inflate = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, 
+#                                              (2*inflation_radius+1, 2*inflation_radius+1))
+#         occ_inflated = cv2.dilate(occ, kernel_inflate, iterations=1)
+#         free_inflated = (1 - occ_inflated).astype(np.uint8)
+#     else:
+#         occ_inflated = occ
+#         free_inflated = free
+    
+#     return occ_inflated, free_inflated
+
+def build_occupancy_from_tdsm_colors(
+    tdsm_bgr,
+    tol=10,
+    inflation_radius=25,
+    # --- 횡단보도 처리를 위한 인자 추가 ---
+    crosswalk_color=np.array([55, 176, 189], dtype=np.int16),
+    crosswalk_expansion_radius=20
+):
+    """
+    TDSM 이미지로부터 Occupancy Map을 생성합니다.
+    횡단보도 내 장애물을 올바르게 처리하도록 로직이 개선되었습니다.
+    - 횡단보도를 포함한 모든 주행 가능 '후보' 영역을 먼저 정의합니다.
+    - '후보'가 아닌 모든 영역을 장애물로 간주하고, 이 장애물 주변에만 inflation을 적용합니다.
+    """
+    H, W = tdsm_bgr.shape[:2]
+    img = tdsm_bgr.astype(np.int16)
+
+    # 주행 가능 영역 색상들 (횡단보도 제외)
+    free_colors = [
+        np.array([244, 35, 232], dtype=np.int16),  # side walk
+        np.array([0, 0, 142], dtype=np.int16),    # ego robot
+    ]
+
+    # 1. 주행 가능 '후보' 영역 마스크 생성 (보도 + 확장된 횡단보도)
+    # --------------------------------------------------------------------
+    potential_free_mask = np.zeros((H, W), dtype=bool)
+
+    # 기본 주행 가능 영역 (보도 등) 추가
+    for color in free_colors:
+        mask = np.all(np.abs(img - color.reshape(1, 1, 3)) <= tol, axis=2)
+        potential_free_mask |= mask
+
+    # 확장된 횡단보도 영역 추가
+    if crosswalk_expansion_radius > 0 and crosswalk_color is not None:
+        crosswalk_mask = np.all(np.abs(img - crosswalk_color.reshape(1, 1, 3)) <= tol, axis=2)
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (2 * crosswalk_expansion_radius + 1, 2 * crosswalk_expansion_radius + 1)
+        )
+        expanded_crosswalk_mask = cv2.dilate(crosswalk_mask.astype(np.uint8), kernel, iterations=1)
+        potential_free_mask |= (expanded_crosswalk_mask > 0)
+
+    # 2. 초기 장애물 마스크 생성 (주행 가능 후보가 아닌 모든 것)
+    # --------------------------------------------------------------------
+    # uint8 타입으로 변환 후, 1(후보)과 0(그 외)으로 만듦
+    initial_obstacles = (1 - potential_free_mask.astype(np.uint8))
+
+    # 3. 장애물 영역에 Inflation 적용
+    # --------------------------------------------------------------------
+    if inflation_radius > 0:
+        kernel_inflate = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (2 * inflation_radius + 1, 2 * inflation_radius + 1)
+        )
+        # 여기서 팽창된 장애물 맵이 최종 Occupancy Map이 됩니다.
+        occ_inflated = cv2.dilate(initial_obstacles, kernel_inflate, iterations=1)
+    else:
+        occ_inflated = initial_obstacles
+
+    # 4. 최종 주행 가능 영역과 Occupancy Map 계산
+    # --------------------------------------------------------------------
+    # 최종 주행 가능 영역은 팽창된 장애물을 제외한 나머지입니다.
+    free_inflated = (1 - occ_inflated).astype(np.uint8)
+
+    # Morphology 연산(CLOSE, OPEN)은 필요하다면 여기에 적용할 수 있습니다.
+    # 예: free_inflated = cv2.morphologyEx(free_inflated, cv2.MORPH_OPEN, kernel_open)
+
+    return occ_inflated, free_inflated
+
+def estimate_px_per_meter(img_h, cam_height_m=10.0, fov_deg=90.0):
+    """픽셀 당 미터 변환 계수 계산"""
+    vertical_m = 2.0 * cam_height_m * math.tan(math.radians(fov_deg) / 2.0)
+    return img_h / max(1e-6, vertical_m)
+
+def ego_to_pixel(ego_xy_m, px_per_m, img_h, img_w):
+    """ego coordinate를 pixel coordinate로 변환"""
+    x_fwd, y_left = float(ego_xy_m[0]), float(ego_xy_m[1])
+    row = int(img_h//2 - x_fwd * px_per_m)
+    col = int(img_w//2 - y_left * px_per_m)
+    return row, col
+
+def pixel_to_ego(row, col, px_per_m, img_h, img_w):
+    """pixel coordinate를 ego coordinate로 변환"""
+    x_fwd = (img_h//2 - row) / px_per_m
+    y_left = (img_w//2 - col) / px_per_m
+    return np.array([x_fwd, y_left], dtype=np.float32)
+
+def find_nearest_free_cell(grid, target_rc, max_radius=15):
+    """막힌 목표점 주변에서 가장 가까운 자유 공간 찾기 (반경 증가)"""
+    h, w = grid.shape
+    tr, tc = target_rc
+    
+    if 0 <= tr < h and 0 <= tc < w and grid[tr, tc] == 0:
+        return target_rc
+    
+    # BFS로 가장 가까운 자유 공간 찾기
+    queue = deque([(tr, tc, 0)])
+    visited = set()
+    
+    directions = [(-1,0), (1,0), (0,-1), (0,1), (-1,-1), (-1,1), (1,-1), (1,1)]
+    
+    while queue:
+        r, c, dist = queue.popleft()
+        
+        if (r, c) in visited or dist > max_radius:
+            continue
+        visited.add((r, c))
+        
+        if 0 <= r < h and 0 <= c < w and grid[r, c] == 0:
+            return (r, c)
+        
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) not in visited:
+                queue.append((nr, nc, dist + 1))
+    
+    return target_rc  # fallback
+
+def improved_astar(grid, start_rc, goal_rc):
+    """개선된 A* 알고리즘 - inflation이 적용된 grid 사용"""
+    h, w = grid.shape
+    sr, sc = start_rc
+    gr, gc = goal_rc
+    
+    # 시작점과 목표점이 막혀있으면 가까운 자유 공간으로 이동
+    if grid[sr, sc] == 1:
+        sr, sc = find_nearest_free_cell(grid, (sr, sc))
+    if grid[gr, gc] == 1:
+        gr, gc = find_nearest_free_cell(grid, (gr, gc))
+    
+    def heuristic(r, c):
+        return math.hypot(r - gr, c - gc)
+    
+    # 8방향 이동 (대각선 비용 더 정확하게)
+    directions = [
+        (-1, 0, 1.0), (1, 0, 1.0), (0, -1, 1.0), (0, 1, 1.0),  # 직선
+        (-1, -1, math.sqrt(2)), (-1, 1, math.sqrt(2)), 
+        (1, -1, math.sqrt(2)), (1, 1, math.sqrt(2))  # 대각선
+    ]
+    
+    g_score = {(sr, sc): 0.0}
+    parent = {(sr, sc): None}
+    pq = [(heuristic(sr, sc), 0.0, sr, sc)]
+    visited = set()
+    
+    while pq:
+        f, g_current, r, c = heapq.heappop(pq)
+        
+        if (r, c) in visited:
+            continue
+        visited.add((r, c))
+        
+        if (r, c) == (gr, gc):
+            # 경로 복원
+            path = []
+            current = (r, c)
+            while current is not None:
+                path.append(current)
+                current = parent[current]
+            path.reverse()
+            return path
+        
+        for dr, dc, cost in directions:
+            nr, nc = r + dr, c + dc
+            
+            if not (0 <= nr < h and 0 <= nc < w):
+                continue
+            if grid[nr, nc] == 1:
+                continue
+            
+            tentative_g = g_current + cost
+            
+            if (nr, nc) not in g_score or tentative_g < g_score[(nr, nc)]:
+                g_score[(nr, nc)] = tentative_g
+                parent[(nr, nc)] = (r, c)
+                f_score = tentative_g + heuristic(nr, nc)
+                heapq.heappush(pq, (f_score, tentative_g, nr, nc))
+    
+    return None  # 경로를 찾을 수 없음
+
+def create_enhanced_visualization(tdsm_bgr, occ, free_mask, path, start_rc, goal_rc, local_rc):
+    """향상된 시각화 함수"""
+    vis = tdsm_bgr.copy()
+    h, w = vis.shape[:2]
+    
+    # 1. 주행 가능 영역을 반투명 초록색으로 표시
+    free_overlay = np.zeros_like(vis)
+    free_overlay[free_mask == 1] = (0, 255, 0)  # 초록색
+    vis = cv2.addWeighted(vis, 0.7, free_overlay, 0.3, 0)
+    
+    # 2. 장애물을 반투명 빨간색으로 표시 (inflation 적용된 영역)
+    obstacle_overlay = np.zeros_like(vis)
+    obstacle_overlay[occ == 1] = (0, 0, 255)  # 빨간색
+    vis = cv2.addWeighted(vis, 1.0, obstacle_overlay, 0.4, 0)
+    
+    # 3. 경로를 굵은 흰색 선으로 그리기
+    if path is not None and len(path) >= 2:
+        pts = np.array([[c, r] for r, c in path], dtype=np.int32).reshape(-1, 1, 2)
+        
+        # 배경용 두꺼운 검은 선
+        cv2.polylines(vis, [pts], False, (0, 0, 0), 12, cv2.LINE_AA)
+        # 메인 흰색 선
+        cv2.polylines(vis, [pts], False, (0, 255, 255), 10, cv2.LINE_AA)
+        
+        # 경로의 방향성을 보여주는 화살표들
+        for i in range(0, len(path) - 5, 5):
+            p1 = path[i]
+            p2 = path[i + 3] if i + 3 < len(path) else path[-1]
+            
+            pt1 = (int(p1[1]), int(p1[0]))
+            pt2 = (int(p2[1]), int(p2[0]))
+            cv2.arrowedLine(vis, pt1, pt2, (255, 255, 0), 2, tipLength=0.3)
+    
+    # 4. 주요 포인트들을 큰 원으로 표시
+    def draw_point(rc, color, label, radius=8):
+        r, c = int(rc[0]), int(rc[1])
+        if 0 <= r < h and 0 <= c < w:
+            cv2.circle(vis, (c, r), radius + 2, (0, 0, 0), -1, cv2.LINE_AA)
+            cv2.circle(vis, (c, r), radius, color, -1, cv2.LINE_AA)
+            cv2.putText(vis, label, (c + radius + 5, r + 5), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+    
+    draw_point(start_rc, (0, 255, 255), "START")      
+    draw_point(goal_rc, (0, 165, 255), "GOAL")        
+    draw_point(local_rc, (255, 0, 255), "LOCAL")      
+    
+    return vis
+
+def process_semantic_map_and_plan(tdsm_bgr, ego_goal_position, inflation_radius=15, 
+                                show_visualization=True, save_path=None):
+    """
+    메인 처리 함수: semantic map에서 A* 경로 계획 및 시각화
+    
+    Args:
+        tdsm_bgr: Top-down semantic map (BGR format)
+        ego_goal_position: 목표 위치 [x_forward, y_left] in meters
+        inflation_radius: 장애물 팽창 반경 (픽셀 단위)
+        show_visualization: 시각화 표시 여부 (기본 True)
+        save_path: 저장할 경로 (None이면 저장하지 않음, 기본 None)
+    
+    Returns:
+        vis: 시각화된 이미지 (show_visualization=True일 때만)
+        path: A* 경로 [(row, col), ...]
+        local_target_ego: 로컬 타겟의 ego coordinate
+    """
+    H, W = tdsm_bgr.shape[:2]
+    
+    # 1. Occupancy map 생성 (inflation layer 포함)
+    # occ, free_mask = build_occupancy_from_tdsm_colors(tdsm_bgr, tol=10, k_close=5, k_open=3,inflation_radius=inflation_radius)
+    
+    occ, free_mask = build_occupancy_from_tdsm_colors(tdsm_bgr, tol=10, inflation_radius=inflation_radius)
+    
+    # 2. 픽셀-미터 변환 계수
+    PX_PER_M = estimate_px_per_meter(img_h=H, cam_height_m=10.0, fov_deg=90.0)
+    
+    # 3. 목표점을 픽셀 좌표로 변환
+    goal_row, goal_col = ego_to_pixel(ego_goal_position, PX_PER_M, H, W)
+    goal_row = int(np.clip(goal_row, 0, H-1))
+    goal_col = int(np.clip(goal_col, 0, W-1))
+    
+    # 4. A* 실행 (inflation이 적용된 occupancy map 사용)
+    start_rc = (H//2, W//2)
+    path = improved_astar(occ, start_rc, (goal_row, goal_col))
+    
+    if path is None:
+        print("WARNING: No path found!")
+        local_rc = (goal_row, goal_col)
+        local_target_ego = ego_goal_position
+    else:
+        # 로컬 타겟 선택 (lookahead)
+        lookahead_distance = 15
+        lookahead_idx = min(lookahead_distance, len(path) - 1)
+        local_rc = path[lookahead_idx]
+        
+        # 로컬 타겟을 ego coordinate로 변환
+        local_target_ego = pixel_to_ego(local_rc[0], local_rc[1], PX_PER_M, H, W)
+    
+    # 5. 시각화 생성 및 표시
+    vis = None
+    if show_visualization:
+        vis = create_enhanced_visualization(tdsm_bgr, occ, free_mask, path, 
+                                           start_rc, (goal_row, goal_col), local_rc)
+        
+        # OpenCV 창으로 시각화 표시
+        cv2.imshow('A* Path Planning with Inflation', vis)
+        cv2.waitKey(1)  # 1ms 대기
+        
+        # 저장 (옵션)
+        if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            cv2.imwrite(save_path, vis)
+    
+    return vis, path, local_target_ego
+
+def pick_goal_on_free_mask(
+    tdsm_bgr,
+    waypoints, 
+    k, 
+    agent_pos, 
+    agent_heading, 
+    tol=10, 
+    k_close=5, 
+    k_open=3, 
+    inflation_radius=25,
+    cam_height_m=10.0, 
+    fov_deg=90.0
+):
+    """
+    Return (chosen_idx, ego_goal_position, goal_rc) where:
+      - chosen_idx: index of the chosen waypoint (>= k) that lies on free space, or k if none
+      - ego_goal_position: [x_fwd, y_left] of the chosen waypoint in ego frame
+      - goal_rc: (row, col) pixel coordinates of the chosen waypoint (for debugging/visualization)
+
+    We recompute free_mask locally to test feasibility. This is cheap and keeps the selection local.
+    """
+    H, W = tdsm_bgr.shape[:2]
+
+    # 1) Build occupancy & free mask using the SAME parameters as planning
+    # occ, free_mask = build_occupancy_from_tdsm_colors(
+        # tdsm_bgr, tol=tol, k_close=k_close, k_open=k_open, inflation_radius=inflation_radius
+    # )
+
+    occ, free_mask = build_occupancy_from_tdsm_colors(tdsm_bgr, tol=10, inflation_radius=inflation_radius)
+
+    # 2) Pixel-per-meter conversion (consistent with your planner)
+    px_per_m = estimate_px_per_meter(img_h=H, cam_height_m=cam_height_m, fov_deg=fov_deg)
+
+    # 3) Search from k to the end for a waypoint that lands in free space
+    chosen_idx = k
+    chosen_ego = None
+    chosen_rc = None
+
+    for j in range(k, len(waypoints)):
+        global_target = waypoints[j]
+        ego_goal = convert_to_egocentric(global_target, agent_pos, agent_heading)
+        r, c = ego_to_pixel(ego_goal, px_per_m, H, W)
+
+        # Clip to image bounds for safety
+        r = int(np.clip(r, 0, H - 1))
+        c = int(np.clip(c, 0, W - 1))
+
+        # Check if this pixel is free (0 in occ, or 1 in free_mask)
+        if free_mask[r, c] == 1 and occ[r, c] == 0:
+            chosen_idx = j
+            chosen_ego = np.asarray(ego_goal, dtype=np.float32)
+            chosen_rc = (r, c)
+            break
+
+    # 4) If none were free, fall back to original k
+    if chosen_ego is None:
+        global_target = waypoints[k]
+        chosen_ego = convert_to_egocentric(global_target, agent_pos, agent_heading)
+        r, c = ego_to_pixel(chosen_ego, px_per_m, H, W)
+        r = int(np.clip(r, 0, H - 1))
+        c = int(np.clip(c, 0, W - 1))
+        chosen_rc = (r, c)
+
+    return chosen_idx, chosen_ego, chosen_rc
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--out_dir", type=str, default="saved_imgs_minimal")
+parser.add_argument("--show_vis", action="store_true", default=True, help="Show real-time visualization")
+parser.add_argument("--save_images", action="store_true", default=False, help="Save visualization images")
+parser.add_argument("--inflation_radius", type=int, default=85, help="Obstacle inflation radius in pixels")
+args = parser.parse_args()
+
+if args.save_images:
+    os.makedirs(args.out_dir, exist_ok=True)
+
+# 개선된 데이터셋 수집기 import
+from metaurban.examples.world_dataset import ImitationDatasetCollector
+collector = ImitationDatasetCollector("imitation_dataset")
+
+running = True
+episode = 3
+
+# from semantic_env_config import EnvConfig
+
+from metaurban.examples.dynamic_env import EnvConfig
+env_config = EnvConfig()
+
+# env = SidewalkStaticMetaUrbanEnv(env_config.base_env_cfg)
+env = SidewalkDynamicMetaUrbanEnv(env_config.base_env_cfg)
+
+try:
+    for i in range(100000):
+        episode += 1
+        
+        obs, info = env.reset(seed=episode)
+        waypoints = env.agent.navigation.checkpoints 
+        
+        # 웨이포인트가 충분히 있는지 확인
+        while len(waypoints) < 30:
+            episode += 1
+            obs, info = env.reset(seed=episode)
+            waypoints = env.agent.navigation.checkpoints 
+        
+        num_waypoints = len(waypoints)
+        print(f'Episode {episode}: {num_waypoints} waypoints')
+        
+        collector.start_new_episode(waypoints)
+
+        time_interval = 2
+        scenario_t = 0
+        
+        # Top-down 카메라 센서 가져오기
+        top_down_camera = env.engine.get_sensor("top_down_semantic")
+        
+        k = 5  # 5번째 웨이포인트를 목표로 설정
+        reward = 0
+        
+        while running:
+            if scenario_t % time_interval == 0:
+                # 센서 데이터 처리
+                rgb = obs["image"][..., -1]
+                max_rgb_value = rgb.max()
+                if max_rgb_value > 1:
+                    rgb = rgb.astype(np.uint8)
+                else:
+                    rgb = (rgb * 255).astype(np.uint8)
+                
+                # Top-down semantic map 획득
+                top_down_semantic_map = top_down_camera.perceive(
+                    new_parent_node=env.agent.origin,
+                    position=[0, 0, 10],
+                    hpr=[0, -90, 0]
+                )
+                
+                tdsm_bgr = (top_down_semantic_map[..., ::-1] * 255).astype(np.uint8)
+                
+                
+                # 목표 설정 (free_mask를 고려)
+                waypoints = env.agent.navigation.checkpoints
+                agent_pos = env.agent.position
+                agent_heading = env.agent.heading_theta
+
+                # Use the same inflation radius you pass to the planner (args.inflation_radius)
+                chosen_idx, ego_goal_position, goal_rc = pick_goal_on_free_mask(
+                    tdsm_bgr,
+                    waypoints,
+                    k,
+                    agent_pos,
+                    agent_heading,
+                    tol=3,
+                    k_close=5,
+                    k_open=3,
+                    inflation_radius=args.inflation_radius,  # keep consistent with planner
+                    cam_height_m=10.0,
+                    fov_deg=90.0
+                )
+
+                # If you want, advance k when the chosen index moves forward
+                k = max(k, chosen_idx)
+                
+                global_target = waypoints[k]
+                
+                ego_goal_position = convert_to_egocentric(global_target, agent_pos, agent_heading)
+                
+                # 목표 웨이포인트 업데이트
+                distance_to_target = np.linalg.norm(ego_goal_position)
+                if distance_to_target < 5.0:
+                    k += 1
+                    if k >= num_waypoints:
+                        k = num_waypoints - 1
+
+                # 에이전트 상태 정보
+                agent_state = {
+                    "position": env.agent.position,
+                    "heading": env.agent.heading_theta,
+                    "velocity": env.agent.speed,
+                    "angular_velocity": getattr(env.agent, 'angular_velocity', 0.0)
+                }
+                
+                # **개선된 A* with Inflation Layer 사용**
+                save_path = None
+                if args.save_images:
+                    save_path = os.path.join(args.out_dir, f"seed_{env.current_seed:06d}_t_{scenario_t:06d}_astar.png")
+                
+                vis, path, local_target_ego = process_semantic_map_and_plan(
+                    tdsm_bgr, ego_goal_position, 
+                    inflation_radius=args.inflation_radius,
+                    show_visualization=args.show_vis,
+                    save_path=save_path
+                )
+
+                # PD 컨트롤러 사용
+                y_left_error = float(local_target_ego[1])
+                action = pd_controller.update(y_left_error)
+                
+                # 데이터 수집
+                collector.collect_sample(
+                    obs, action, agent_state, ego_goal_position, reward, scenario_t
+                )
+                
+            obs, reward, tm, tc, info = env.step(action)
+            scenario_t += 1
+
+            # 에피소드 종료 조건
+            if tm or tc or scenario_t >= 800 or reward < 0:
+                episode_info = {
+                    "seed": episode,
+                    "terminated": tm,
+                    "truncated": tc,
+                    "crashed": reward < 0,
+                    "episode_length": scenario_t,
+                    "success": bool(np.linalg.norm(waypoints[-1] - env.agent.position) < 1)
+                }
+
+                agent_state = {
+                    "position": env.agent.position,
+                    "heading": env.agent.heading_theta,
+                    "velocity": env.agent.speed,
+                }
+                
+                collector.collect_sample(
+                    obs, action, agent_state, ego_goal_position, reward, scenario_t
+                )  
+                break
+        
+        print(f"Episode completed with {scenario_t} steps")
+        collector.finish_episode(episode_info)
+        
+        # 주기적으로 데이터셋 저장
+        if scenario_t > 64 and collector.episode_counter % 10 == 0:
+            collector.save_dataset_info()
+            collector.create_train_test_split()
+            print(f"\nDataset update - Episode {collector.episode_counter}:")
+            print(f"  Total episodes: {collector.episode_counter}")
+            print(f"  Total samples: {collector.dataset_info['total_samples']}")
+            
+finally:
+    print('Semantic MPPI imitation data collection done!')
+    cv2.destroyAllWindows()  # OpenCV 창 닫기
+    env.close()
+
+# python script.py --inflation_radius 10 --save_images --show_vis
