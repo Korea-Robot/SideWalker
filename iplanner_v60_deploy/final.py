@@ -37,7 +37,7 @@ class RealSensePlannerControl(Node):
 
         # Odometry 및 웨이포인트 관련 변수
         self.current_pose = None  # [x, y, yaw]
-        self.waypoints = [(3.0, 0.0), (3.0, 3.0), (0.0, 3.0), (0.0, 0.0)]
+        self.waypoints = [(2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]
         self.waypoint_index = 0
         self.goal_threshold = 0.4  # [수정 2] 변수명 오타 수정
 
@@ -118,9 +118,17 @@ class RealSensePlannerControl(Node):
     def depth_callback(self, msg):
         try:
             depth_cv = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
-            depth_cv = np.clip(depth_cv, 0, 5000)
-            depth_normalized = (depth_cv / 5000.0 * 255).astype(np.uint8)
-            self.current_depth_tensor = self.transform(depth_normalized).unsqueeze(0).to(self.device)
+            
+            # normalized value : mm => Meter 
+            depth_cv = (depth_cv/1000.0).astype("float32")
+            depth_cv = np.clip(depth_cv, 0, 10)
+            depth_normalized = (depth_cv / 10 *255).astype(np.uint8)
+
+            # tensor input
+            depth_cv[depth_cv>10] = 0
+            # breakpoint()
+            
+            self.current_depth_tensor = self.transform(depth_cv).unsqueeze(0).to(self.device)
             depth_display = cv2.applyColorMap(depth_normalized, cv2.COLORMAP_JET)
             with self.data_lock:
                 self.visualization_image = depth_display
@@ -139,6 +147,7 @@ class RealSensePlannerControl(Node):
             angle_diff = torch.atan2(torch.sin(angle_diff), torch.cos(angle_diff))
             angular_z[:, 1:] = angle_diff / dt
         angular_z[:, 0] = heading_angles[:, 0] / (dt * self.angular_gain)
+        # breakpoint()
         return torch.stack([linear_x, angular_z], dim=-1)
 
     def draw_path_and_direction(self, image, waypoints_tensor, angular_z):
@@ -201,20 +210,26 @@ class RealSensePlannerControl(Node):
                 waypoints = self.traj_cost.opt.TrajGeneratorFromPFreeRot(preds, step=0.1)
                 cmd_vels = self.waypoints_to_cmd_vel(waypoints)
                 
-                linear_x = torch.clamp(cmd_vels[0, 0, 0], -1.0, 0.5).item()
-                angular_z = torch.clamp(cmd_vels[0, 0, 1], -1.0, 0.8).item()
+                # breakpoint()
+
+                # folow index k future
+                k = 10
+                linear_x = torch.clamp(cmd_vels[0, k, 0], -0.5, 0.6).item()
+                angular_z = torch.clamp(cmd_vels[0, k, 1], -1.0, 1.0).item()
                 
                 fear_val = fear.cpu().item()
                 
                 # [수정 4] 'Fear' 안전 로직 부등호 및 반응 수정
-                if fear_val < 0.3: # 위험도가 0.3보다 크면 (매우 가까우면) 후진
-                    linear_x  = 0.0
-                    angular_z = 0.0
-                elif fear_val < 0.1: # 위험도가 0.1보다 크면 속도 점진적 감소
+                if fear_val > 0.4:   # 위험도가 0.5보다 크면 속도 점진적 감소
+                    linear_x *= max(0, 1.0 - fear_val)
+                    # print('collision caution!!')
+                    # linear_x  = 0.2
+                    # angular_z = 0.0
+                elif fear_val > 0.6: # 위험도가 0.7보다 크면 (매우 가까우면) stop
                     # 원래 속도에 (1.0 - fear_val) 비율을 곱해 위험할수록 느려지게 만듦
-                    linear_x = -0.15
+                    linear_x = 0.0#-0.15
                     angular_z = 0.0
-                    # linear_x *= max(0, 1.0 - fear_val)
+                    # print('Stop!!!!! careful Collision !!')
 
 
             # 시각화 및 명령 발행
@@ -241,7 +256,8 @@ class RealSensePlannerControl(Node):
         self.get_logger().info("Shutting down...")
         self.running = False
         self.vis_thread.join()
-        self.cmd_pub.publish(Twist())
+        if rclpy.ok():
+            self.cmd_pub.publish(Twist())
         super().destroy_node()
 
 def main(args=None):
@@ -255,7 +271,8 @@ def main(args=None):
     finally:
         if node:
             node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

@@ -13,6 +13,10 @@ class CmdVelToOdom(Node):
     def __init__(self):
         super().__init__('cmd_vel_to_odom')
         
+        self.linear_scale = 1.4
+        self.angular_scale = 1.35 # 0.00135
+
+
         self.subscription = self.create_subscription(
             Twist,
             '/mcu/command/manual_twist',
@@ -36,16 +40,16 @@ class CmdVelToOdom(Node):
 
     def cmd_vel_callback(self, msg):
         """cmd_vel 메시지를 받으면 현재 속도 변수를 업데이트합니다."""
-        self.vx = msg.linear.x
-        self.vy = msg.linear.y
-        self.wz = msg.angular.z
+        self.vx = msg.linear.x * self.linear_scale
+        self.vy = msg.linear.y * self.linear_scale
+        self.wz = msg.angular.z * self.angular_scale
 
     def publish_odom(self):
         """타이머에 맞춰 Odometry를 계산하고 발행 및 TF를 브로드캐스팅합니다."""
         current_time = self.get_clock().now()
         dt = (current_time - self.last_time).nanoseconds / 1e9
 
-        # --- [수정] Odometry 계산 순서 변경 ---
+
         # 1. 위치(x, y) 업데이트를 먼저 수행합니다.
         #    이때 사용하는 self.theta는 이전 스텝의 방향 값입니다.
         # 로봇의 지역 좌표계 속도(vx, vy)를 전역(odom) 좌표계 속도로 변환하여 위치 변화량 계산
@@ -56,8 +60,9 @@ class CmdVelToOdom(Node):
         self.y += delta_y
 
         # 2. 그 다음, 현재 스텝의 방향(theta)을 업데이트합니다.
-        delta_theta = self.wz * dt
+        delta_theta = self.wz * dt 
         self.theta += delta_theta
+        # --- [수정] Odometry 계산 순서 변경 ---
         
         # 각도를 -pi ~ +pi 범위로 정규화
         if self.theta > math.pi:
@@ -86,6 +91,9 @@ class CmdVelToOdom(Node):
         odom_msg.twist.twist.linear.y = self.vy
         odom_msg.twist.twist.angular.z = self.wz
 
+        odom_msg.pose.covariance[0] = -1.0
+        odom_msg.twist.covariance[0]= -1.0
+        
         self.odom_publisher.publish(odom_msg)
 
         # 2. TF(TransformStamped) 메시지 생성 및 브로드캐스팅
