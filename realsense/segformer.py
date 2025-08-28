@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+import pyrealsense2 as rs
+import numpy as np
+import cv2
+import torch
+import segmentation_models_pytorch as smp
+import albumentations as A
+import torch.nn.functional as F
+
+# 1) 디바이스 설정
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+"""
+segformer classes 설명
+
+road
+
+sidewalk
+
+building
+
+wall
+
+fence
+
+pole
+
+traffic light
+
+traffic sign
+
+vegetation
+
+terrain
+
+sky
+
+person
+
+rider
+
+car
+
+truck
+
+bus
+
+train
+
+motorcycle
+
+bicycle
+
+"""
+# 2) SegFormer 체크포인트 및 모델/전처리 로드
+checkpoint = "smp-hub/segformer-b2-1024x1024-city-160k"
+model = smp.Segformer.from_pretrained(checkpoint).eval().to(device)
+
+
+
+preprocessing = A.Compose.from_pretrained(checkpoint)
+
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+
+# 3) 전처리 파이프라인: 긴 쪽은 512로, 비율 유지 후 512x512 패딩, ToTensorV2 사용
+# img_size = 512 # 1024
+# preprocessing = A.Compose([
+#     A.LongestMaxSize(max_size=img_size, interpolation=cv2.INTER_LINEAR),
+#     A.PadIfNeeded(min_height=img_size, min_width=img_size,
+#                   border_mode=cv2.BORDER_CONSTANT, constant_values=0),
+#     A.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225]),
+#     ToTensorV2(),
+# ])
+
+
+# 3) 팔레트 생성 (0~255 인덱스용)
+palette_base = torch.tensor([2**25-1, 2**15-1, 2**21-1], dtype=torch.int64)
+colors = (torch.arange(256, dtype=torch.int64)[:, None] * palette_base) % 255
+colors = colors.numpy().astype('uint8')  # (256,3) RGB 팔레트
+
+# 4) RealSense 컬러 스트림 설정
+pipeline = rs.pipeline()
+config = rs.config()
+config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+pipeline.start(config)
+
+try:
+    while True:
+        frames = pipeline.wait_for_frames()
+        c_frame = frames.get_color_frame()
+        if not c_frame:
+            continue
+
+        # BGR→RGB 변환
+        img_bgr = np.asanyarray(c_frame.get_data())
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+
+        # 5) 전처리 (Albumentations) → Tensor 1xCxHxW
+        augmented = preprocessing(image=img_rgb)
+        preproc_img = augmented['image']  # HWC, float32
+        input_tensor = torch.tensor(preproc_img).permute(2,0,1).unsqueeze(0).to(device)
+
+        print(input_tensor.shape) 
+
+
+        # 6) 추론 및 원해상도 업샘플링
+        with torch.no_grad():
+            logits = model(input_tensor)
+        print(logits.shape)
+        
+        breakpoint()
+        if isinstance(logits, dict):
+            logits = logits['out']
+        logits = F.interpolate(logits, size=img_rgb.shape[:2], mode='bilinear', align_corners=False)
+        preds = logits.argmax(1)[0].cpu().numpy().astype(np.uint8)  # HxW
+
+        # 7) 마스크 컬러화 & 오버레이
+        mask_rgb = colors[preds]            # HxWx3
+        mask_bgr = cv2.cvtColor(mask_rgb, cv2.COLOR_RGB2BGR)
+        overlay = cv2.addWeighted(img_bgr, 0.5, mask_bgr, 0.5, 0)
+
+        # 8) 실시간 디스플레이
+        cv2.imshow("SegFormer Segmentation", overlay)
+        if cv2.waitKey(1) & 0xFF == 27:
+            break
+
+except KeyboardInterrupt:
+    pass
+finally:
+    pipeline.stop()
+    cv2.destroyAllWindows()
