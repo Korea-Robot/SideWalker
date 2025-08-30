@@ -37,9 +37,11 @@ class RealSensePlannerControl(Node):
 
         # Odometry 및 웨이포인트 관련 변수
         self.current_pose = None
-        self.waypoints = [(3.0, 0.0), (3.0, 3.0), (0.0, 3.0), (0.0, 0.0)]
-        self.waypoint_index = 0
-        self.goal_threshold = 0.4
+        # self.waypoints = [(0.0, 0.0),(5.0, 0.0), (5.0, 10.0), (20.0, 10.0), (20.0, 50.0),(-20.0, 50.0),(-20.0,10.0),(5.0,10.0)]
+        self.waypoints = [(0.0, 0.0),(3.0, 0.0), (3.0, 3.0), (0.0, 3.0),(0.0, 0.0),(3.0, 0.0), (3.0, 3.0), (0.0, 3.0),(0.0, 0.0),(3.0, 0.0), (3.0, 3.0), (0.0, 3.0),(0.0, 0.0)] # self rotation 3
+        
+        self.waypoint_index = 0 # len(self.waypoints)
+        self.goal_threshold = 0.6
 
         self.control_timer = self.create_timer(0.1, self.control_callback)
         self.setup_planner()
@@ -49,7 +51,7 @@ class RealSensePlannerControl(Node):
 
         # === CV2 시각화를 위한 변수들 ===
         # Intel RealSense D435의 일반적인 내장 파라미터 (640x480 기준)
-        self.cam_fx, self.cam_fy, self.cam_cx, self.cam_cy = 384.0, 384.0, 320.0, 240.0
+        self.cam_fx, self.cam_fy, self.cam_cx, self.cam_cy = 384.0, 384.0, 320.0, 240.0 # why we need?
         self.visualization_image = None
         self.running = True
         self.vis_thread = threading.Thread(target=self._visualization_thread)
@@ -79,8 +81,10 @@ class RealSensePlannerControl(Node):
 
     def setup_planner(self):
         # model load and data preprocess
-        config_path = os.path.join(os.path.dirname(os.getcwd()), 'config', 'training_config.json')
-        with open(config_path) as f: config = json.load(f)
+        # config_path = os.path.join(os.path.dirname(os.getcwd()), 'config', 'training_config.json')
+        # with open(config_path) as f: 
+        #     config = json.load(f)
+
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model_path = "./models/plannernet.pt"
         self.net, _ = torch.load(model_path, map_location=self.device, weights_only=False)
@@ -88,7 +92,8 @@ class RealSensePlannerControl(Node):
         if torch.cuda.is_available(): self.net = self.net.cuda()
         self.transform = transforms.Compose([
             transforms.ToPILImage(),
-            transforms.Resize((config['dataConfig']['crop-size'])),
+            # transforms.Resize((config['dataConfig']['crop-size'])),
+            transforms.Resize(([360, 640])),
             transforms.Grayscale(num_output_channels=3),
             transforms.ToTensor()
         ])
@@ -99,11 +104,12 @@ class RealSensePlannerControl(Node):
     def depth_callback(self, msg):
         try:
             depth_cv = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
-            depth_cv = (np.clip(depth_cv, 0, 10000) / 1000).astype(np.float32) # 10-meter range
-            depth_cv[depth_cv>10] = 0 # over 10m is zero value
+            max_depth_value = 10.0 # meter  unit 
+            depth_cv = (np.clip(depth_cv, 0, max_depth_value*1000) / 1000.0).astype(np.float32) # mm => meter range change 
+            depth_cv[depth_cv>max_depth_value] = 0 # over max depth value is zero value
 
             # 뎁스 이미지를 컬러맵으로 변환하여 시각화용 이미지 생성
-            depth_normalized = (depth_cv / 10.0 * 255).astype(np.uint8)
+            depth_normalized = (depth_cv / max_depth_value * 255).astype(np.uint8)
             depth_display = cv2.applyColorMap(depth_normalized, cv2.COLORMAP_JET)
 
             # AI 모델 입력용 텐서 생성
@@ -120,7 +126,13 @@ class RealSensePlannerControl(Node):
             return
 
         try:
-            if self.waypoint_index >= len(self.waypoints): return
+            if self.waypoint_index >= len(self.waypoints): 
+                # all waypoints complete 
+                twist = Twist()
+                twist.linear.x = 0.0
+                twist.angular.z = 0.0
+                self.cmd_pub.publish(twist)
+                return
 
             target_wp = self.waypoints[self.waypoint_index]
             with self.plot_data_lock:
@@ -130,21 +142,77 @@ class RealSensePlannerControl(Node):
             if distance_to_goal < self.goal_threshold:
                 self.get_logger().info(f"✅ Waypoint {self.waypoint_index} reached!")
                 self.waypoint_index += 1
-                if self.waypoint_index >= len(self.waypoints): return
+                if self.waypoint_index >= len(self.waypoints):
+                    twist = Twist()
+                    twist.linear.x = 0.0
+                    twist.angular.z = 0.0
+                    self.cmd_pub.publish(twist)                
 
+                    return
+
+            # global coordinate 
             target_wp = self.waypoints[self.waypoint_index]
+
+            # global difference vector : target - current 
             dx_global, dy_global = target_wp[0] - current_x, target_wp[1] - current_y
+            
+            # local goal position : Rotation transform 
             local_x = dx_global * math.cos(current_yaw) + dy_global * math.sin(current_yaw)
             local_y = -dx_global * math.sin(current_yaw) + dy_global * math.cos(current_yaw)
             local_goal_tensor = torch.tensor([local_x, local_y, 0.0], dtype=torch.float32).unsqueeze(0).to(self.device)
-
+            # tensor([[5., 0., 0.]], device='cuda:0')
+            
             with torch.no_grad():
                 preds_tensor, fear = self.net(self.current_depth_tensor, local_goal_tensor)
-                waypoints_tensor = self.traj_cost.opt.TrajGeneratorFromPFreeRot(preds_tensor, step=0.1)
-                cmd_vels = self.waypoints_to_cmd_vel(waypoints_tensor)
+
+                # only use preds_tensor. 
+
+                waypoints_tensor = self.traj_cost.opt.TrajGeneratorFromPFreeRot(preds_tensor, step=0.1) # meter unit.
+
+                # (Pdb) preds_tensor (x,y,z) : right-handed coordinate 
+                # shape (1,5,3)
+                # tensor([[[ 7.3114e-01, -8.5702e-01, -5.5543e-04],
+                #         [ 1.6043e+00, -1.3735e+00, -5.4416e-04],
+                #         [ 2.6050e+00, -1.4175e+00,  2.5468e-03],
+                #         [ 3.8897e+00, -7.5083e-01,  7.0542e-03],
+                #         [ 4.9303e+00, -2.1319e-02,  4.4444e-03]]], device='cuda:0')
                 
+
+                # cmd_vels = self.waypoints_to_cmd_vel(waypoints_tensor) 
+                # shape = (1,5,2)
+                # tensor([[
+                # [11.2652, -4.3225],
+                # [10.1447,  3.3032],
+                # [10.0171,  4.9026],
+                # [14.4730,  5.2260],
+                # [12.7088,  1.3271]]], device='cuda:0')
+                
+                # direct cmd vel like 
+                cmd_vels = preds_tensor[:,:,:2]
+
                 fear_val = fear.cpu().item()
-                angular_z = torch.clamp(cmd_vels[0, 0, 1], -1.0, 0.8).item()
+
+                # select k preds  and k+H preds mean 
+                k =1 
+                h = 3
+                ############################################################## use pred waypoints directly control
+                angular_z = torch.clamp(cmd_vels[0, k:k+h, 1], -1.0, 1.0).mean().cpu().item()
+
+
+                # main controller 
+
+                linear_x = 0.0
+                # collision probability 
+                if fear_val > 0.8:
+                    linear_x=0.0
+                    angular_z = 0.0
+                
+                # non-collision case => change to  categorical distribution 
+                else:
+                    if abs(angular_z)> 0.15:
+                        linear_x = 0.0
+                    else:
+                        linear_x = np.clip(linear_x,0.2,0.5)
 
                 with self.plot_data_lock:
                     self.latest_preds = preds_tensor.squeeze().cpu().numpy()
@@ -158,7 +226,14 @@ class RealSensePlannerControl(Node):
                         final_img = self.draw_path_and_direction(img_to_draw, waypoints_tensor, angular_z, fear_val)
                         self.visualization_image = final_img
 
-            self.get_logger().info(f"WP[{self.waypoint_index}]->({local_x:.1f},{local_y:.1f}) | Visualizing... Fear:{fear_val:.2f}")
+
+            # Twist message generate & Publish
+            twist = Twist()
+            twist.linear.x = float(linear_x)
+            twist.angular.z= float(angular_z)
+            self.cmd_pub.publish(twist)
+
+            self.get_logger().info(f"WP[{self.waypoint_index}]->({local_x:.1f},{local_y:.1f}) | CMD : linear_x ={linear_x:.2f} angular_z = {angular_z:.2f} Fear:{fear_val:.2f}")
 
         except Exception as e:
             self.get_logger().error(f"Control loop error: {e}\n{traceback.format_exc()}")
@@ -217,13 +292,14 @@ class RealSensePlannerControl(Node):
         cv2.arrowedLine(image, (w // 2, h - 20), arrow_end, arrow_color, 3)
 
         # 3. 위험 경고 그리기
-        if fear_val > 0.3:
+        if fear_val > 0.6:
             cv2.putText(image, "!! DANGER - STOP !!", (w // 2 - 200, 30), cv2.FONT_HERSHEY_DUPLEX, 1, (0, 0, 255), 2)
-        elif fear_val > 0.1:
+        elif fear_val > 0.4:
             cv2.putText(image, "CAUTION - SLOWING", (w // 2 - 190, 30), cv2.FONT_HERSHEY_DUPLEX, 1, (0, 165, 255), 2)
 
         return image
 
+    # don't use!! this!
     def waypoints_to_cmd_vel(self, waypoints, dt=0.1): # 기존과 동일
         if waypoints.shape[1] < 2: return torch.zeros(1, 1, 2, device=waypoints.device)
         dx = waypoints[:, 1:, 0] - waypoints[:, :-1, 0]
