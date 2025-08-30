@@ -15,39 +15,24 @@ import matplotlib.pyplot as plt
 # --- 설정 변수 ---
 # 1. Realsense 카메라 이미지 토픽 이름
 REALSENSE_TOPIC = "/camera/camera/color/image_raw"
-REALSENSE_TOPIC = "/argus/ar0234_front_left/image_raw"
-
 
 # 2. 학습된 모델 가중치 파일 경로
-MODEL_PATH = "best_model2.pth"
+MODEL_PATH = "surface_mask_best.pt"
 
-MODEL_PATH = "best_seg_model.pth" # best accuracy feel
-
-# MODEL_PATH = "seg_model_epoch_100.pth"
-
-
-# best_model2.pth  best_model.pth  best_seg_model.pth seg_model_epoch_100.pth
 # 3. 추론에 사용할 디바이스 설정
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # --- 학습 스크립트에서 가져온 클래스 정보 ---
 CLASS_TO_IDX = {
-    'background': 0, 'barricade': 1, 'bench': 2, 'bicycle': 3, 'bollard': 4,
-    'bus': 5, 'car': 6, 'carrier': 7, 'cat': 8, 'chair': 9, 'dog': 10,
-    'fire_hydrant': 11, 'kiosk': 12, 'motorcycle': 13, 'movable_signage': 14,
-    'parking_meter': 15, 'person': 16, 'pole': 17, 'potted_plant': 18,
-    'power_controller': 19, 'scooter': 20, 'stop': 21, 'stroller': 22,
-    'table': 23, 'traffic_light': 24, 'traffic_light_controller': 25,
-    'traffic_sign': 26, 'tree_trunk': 27, 'truck': 28, 'wheelchair': 29
+    'background': 0, 'caution_zone': 1, 'bike_lane': 2, 'alley': 3,
+    'roadway': 4, 'braille_guide_blocks': 5, 'sidewalk': 6
 }
-
-
 NUM_LABELS = len(CLASS_TO_IDX)
 
 # --- 학습 스크립트에서 가져온 모델 클래스 정의 ---
 class DirectSegFormer(nn.Module):
     """학습 시 사용된 모델과 동일한 구조의 클래스"""
-    def __init__(self, pretrained_model_name="nvidia/mit-b0", num_classes=30):
+    def __init__(self, pretrained_model_name="nvidia/mit-b0", num_classes=7):
         super().__init__()
         try:
             self.original_model = SegformerForSemanticSegmentation.from_pretrained(
@@ -106,34 +91,29 @@ class SegformerViewerNode(Node):
 
     def load_model(self):
         """DirectSegFormer 모델을 로드하고 state_dict를 적용"""
-        model = DirectSegFormer(num_classes=NUM_LABELS)
-        
         try:
-            # 체크포인트 로드 (weights_only=False로 시도)
-            checkpoint = torch.load(MODEL_PATH, map_location=self.device, weights_only=False)
-
-            
-            # 키 이름 매핑 처리
-            new_state_dict = {}
-            for key, value in checkpoint.items():
-                # 체크포인트의 키가 "segformer."로 시작하면 "original_model." 접두사 추가
-                if key.startswith('segformer.') or key.startswith('decode_head.'):
-                    new_key = 'original_model.' + key
-                    new_state_dict[new_key] = value
-                else:
-                    new_state_dict[key] = value
-            
-            # 매핑된 state_dict로 모델 로드
-            model.load_state_dict(new_state_dict, strict=False)
-            self.get_logger().info("Model loaded successfully with key mapping")
-            
+            model = DirectSegFormer(num_classes=NUM_LABELS)
+            # 안전한 방식으로 체크포인트 로드
+            checkpoint = torch.load(MODEL_PATH, map_location=self.device, weights_only=True)
+            model.load_state_dict(checkpoint)
+            model.to(self.device)
+            model.eval()  # 추론 모드로 설정
+            return model
         except Exception as e:
             self.get_logger().error(f"Model loading failed: {e}")
-            self.get_logger().warn("Using model without pretrained weights")
-        
-        model.to(self.device)
-        model.eval()  # 추론 모드로 설정
-        return model
+            self.get_logger().info("Trying alternative loading method...")
+            
+            # 대안: 빈 모델 생성 후 체크포인트 로드 시도
+            model = DirectSegFormer(num_classes=NUM_LABELS)
+            try:
+                checkpoint = torch.load(MODEL_PATH, map_location=self.device, weights_only=False)
+                model.load_state_dict(checkpoint)
+            except:
+                self.get_logger().warn("Using model without pretrained weights")
+            
+            model.to(self.device)
+            model.eval()
+            return model
 
     def create_color_palette(self):
         """클래스별 고유 색상 팔레트 생성 (OpenCV BGR 형식)"""

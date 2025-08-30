@@ -9,7 +9,8 @@ from albumentations.pytorch import ToTensorV2
 import torch.nn.functional as F
 
 # 1) 디바이스 설정
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda" if torch.cudls
+pya.is_available() else "cpu")
 
 # 2) SegFormer 체크포인트 및 모델/전처리 로드
 checkpoint = "smp-hub/segformer-b2-1024x1024-city-160k"
@@ -17,7 +18,7 @@ model = smp.Segformer.from_pretrained(checkpoint).eval().to(device)
 
 # 3) 전처리 파이프라인: 긴 쪽은 512로, 비율 유지 후 512x512 패딩, ToTensorV2 사용
 img_size = 512
-preprocessing = A.Compose([
+preprocessing = A.Compose([dddd
     A.LongestMaxSize(max_size=img_size, interpolation=cv2.INTER_LINEAR),
     A.PadIfNeeded(min_height=img_size, min_width=img_size,
                   border_mode=cv2.BORDER_CONSTANT, constant_values=0),

@@ -15,39 +15,26 @@ import matplotlib.pyplot as plt
 # --- 설정 변수 ---
 # 1. Realsense 카메라 이미지 토픽 이름
 REALSENSE_TOPIC = "/camera/camera/color/image_raw"
-REALSENSE_TOPIC = "/argus/ar0234_front_left/image_raw"
-
 
 # 2. 학습된 모델 가중치 파일 경로
-MODEL_PATH = "best_model2.pth"
-
-MODEL_PATH = "best_seg_model.pth" # best accuracy feel
-
-# MODEL_PATH = "seg_model_epoch_100.pth"
+MODEL_PATH = "surface_mask_best.pt"
+MODEL_PATH = "surface_mask_best_lrup.pt"
 
 
-# best_model2.pth  best_model.pth  best_seg_model.pth seg_model_epoch_100.pth
 # 3. 추론에 사용할 디바이스 설정
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # --- 학습 스크립트에서 가져온 클래스 정보 ---
 CLASS_TO_IDX = {
-    'background': 0, 'barricade': 1, 'bench': 2, 'bicycle': 3, 'bollard': 4,
-    'bus': 5, 'car': 6, 'carrier': 7, 'cat': 8, 'chair': 9, 'dog': 10,
-    'fire_hydrant': 11, 'kiosk': 12, 'motorcycle': 13, 'movable_signage': 14,
-    'parking_meter': 15, 'person': 16, 'pole': 17, 'potted_plant': 18,
-    'power_controller': 19, 'scooter': 20, 'stop': 21, 'stroller': 22,
-    'table': 23, 'traffic_light': 24, 'traffic_light_controller': 25,
-    'traffic_sign': 26, 'tree_trunk': 27, 'truck': 28, 'wheelchair': 29
+    'background': 0, 'caution_zone': 1, 'bike_lane': 2, 'alley': 3,
+    'roadway': 4, 'braille_guide_blocks': 5, 'sidewalk': 6
 }
-
-
 NUM_LABELS = len(CLASS_TO_IDX)
 
 # --- 학습 스크립트에서 가져온 모델 클래스 정의 ---
 class DirectSegFormer(nn.Module):
     """학습 시 사용된 모델과 동일한 구조의 클래스"""
-    def __init__(self, pretrained_model_name="nvidia/mit-b0", num_classes=30):
+    def __init__(self, pretrained_model_name="nvidia/mit-b0", num_classes=7):
         super().__init__()
         try:
             self.original_model = SegformerForSemanticSegmentation.from_pretrained(
@@ -111,7 +98,6 @@ class SegformerViewerNode(Node):
         try:
             # 체크포인트 로드 (weights_only=False로 시도)
             checkpoint = torch.load(MODEL_PATH, map_location=self.device, weights_only=False)
-
             
             # 키 이름 매핑 처리
             new_state_dict = {}
@@ -230,3 +216,65 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+
+"""
+문제가 명확해졌습니다. 저장된 체크포인트의 키 이름과 현재 모델 구조의 키 이름이 맞지 않습니다.
+체크포인트는 segformer.encoder...로 시작하는데, 현재 모델은 original_model.segformer.encoder...를 기대하고 있습니다. 이는 학습할 때와 추론할 때 모델 래핑 방식이 다르기 때문입니다.
+이를 해결하기 위해 키 매핑을 처리하는 코드로 수정하겠습니다:ROS2 DirectSegFormer Inference NodeCode ∙ Version 4     def load_model(self):
+        #DirectSegFormer 모델을 로드하고 state_dict를 적용
+        model = DirectSegFormer(num_classes=NUM_LABELS)
+
+        try:
+            # 체크포인트 로드 (weights_only=False로 시도)
+            checkpoint = torch.load(MODEL_PA이제 체크포인트의 키 이름을 올바르게 매핑하도록 수정했습니다. 주요 변경사항:
+
+키 매핑 처리: 체크포인트에서 segformer.나 decode_head.로 시작하는 키에 original_model. 접두사를 추가합니다.
+안전한 로딩: weights_only=False로 설정하여 torch.load 제한을 우회합니다.
+Strict=False: 일부 키가 맞지 않을 수 있으므로 strict 모드를 해제합니다.
+
+이렇게 수정하면 다음과 같은 매핑이 이루어집니다:
+
+segformer.encoder.patch_embeddings.0.proj.weight → original_model.segformer.encoder.patch_embeddings.0.proj.weight
+decode_head.linear_c.0.proj.weight → original_model.decode_head.linear_c.0.proj.weight
+
+
+학습할 때와 추론할 때 모델 래핑 방식이 다른 이유는 몇 가지가 있습니다:
+1. 학습 시 직접 모델 저장
+학습 코드에서는 DirectSegFormer 클래스를 정의하고, 이 클래스 내부의 original_model이 실제 SegformerForSemanticSegmentation입니다.
+하지만 모델을 저장할 때 전체 DirectSegFormer 객체를 저장하지 않고, original_model의 state_dict만 저장했을 가능성이 높습니다:
+python# 학습 코드에서 이렇게 저장했을 것으로 추정:
+torch.save(model.original_model.state_dict(), "best_seg_model.pth")
+# 또는
+torch.save(model.state_dict(), "best_seg_model.pth")  # DirectSegFormer 전체
+2. 키 이름 불일치의 원인들
+A) 학습 시 original_model만 저장한 경우
+python# 저장: model.original_model.state_dict()
+# 키 이름: "segformer.encoder.xxx", "decode_head.xxx"
+
+# 로드: DirectSegFormer().load_state_dict()
+# 기대하는 키: "original_model.segformer.encoder.xxx"
+B) 다른 라이브러리나 프레임워크 사용
+학습 시 MMSegmentation, Lightning, 또는 다른 래핑 프레임워크를 사용했다면 모델 구조가 달라질 수 있습니다.
+C) 모델 정의 차이
+학습할 때 사용한 모델 클래스와 추론할 때 사용하는 모델 클래스가 미묘하게 다를 수 있습니다.
+3. 해결 방법들
+가장 정확한 해결책을 찾기 위해 체크포인트를 분석해보세요:
+pythonimport torch
+
+# 체크포인트 구조 확인
+checkpoint = torch.load("ckpts/best_seg_model.pth", map_location="cpu", weights_only=False)
+print("체크포인트 타입:", type(checkpoint))
+
+if isinstance(checkpoint, dict):
+    print("\n상위 키들:")
+    for key in list(checkpoint.keys())[:10]:
+        print(f"  {key}")
+
+    # 모델 구조가 중첩되어 있는지 확인
+    if 'model' in checkpoint:
+        print("\n'model' 키 내부:")
+        for key in list(checkpoint['model'].keys())[:5]:
+            print(f"  {key}")
+이 분석 결과에 따라 정확한 로딩 방법을 결정할 수 있습니다. 학습 코드를 보면 더 정확하게 알 수 있겠지만, 일반적으로 이런 불일치는 모델 저장/로드 방식의 차이에서 발생합니다.
+
+"""

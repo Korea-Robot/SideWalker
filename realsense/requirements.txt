@@ -1,0 +1,12 @@
+#uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+
+# --- Computer Vision & Image Processing ---
+opencv-python
+numpy
+albumentations
+
+# --- Segmentation Model Framework ---
+transformers
+segmentation-models-pytorch
+timm
