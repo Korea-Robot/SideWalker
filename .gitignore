@@ -9,7 +9,9 @@ checkpoints/
 *.json
 
 */wandb/
-
+data/
+*.npy
+*.csv
 
 scripts/minimal_ppo.py
 gpt_images/
