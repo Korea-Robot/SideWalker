@@ -15,13 +15,13 @@ import matplotlib.pyplot as plt
 # --- 설정 변수 ---
 # 1. Realsense 카메라 이미지 토픽 이름
 REALSENSE_TOPIC = "/camera/camera/color/image_raw"
-REALSENSE_TOPIC = "/argus/ar0234_front_left/image_raw"
+# REALSENSE_TOPIC = "/argus/ar0234_front_left/image_raw"
 
 
 # 2. 학습된 모델 가중치 파일 경로
 MODEL_PATH = "best_model2.pth"
 
-MODEL_PATH = "best_seg_model.pth" # best accuracy feel
+# MODEL_PATH = "best_seg_model.pth" # best accuracy feel
 
 # MODEL_PATH = "seg_model_epoch_100.pth"
 
