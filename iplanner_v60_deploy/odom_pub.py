@@ -14,7 +14,7 @@ class CmdVelToOdom(Node):
         super().__init__('cmd_vel_to_odom')
         
         self.linear_scale = 1.4
-        self.angular_scale = 1.35 # 0.00135
+        self.angular_scale = 1.35 # 1.35 # 0.00135
 
 
         self.subscription = self.create_subscription(

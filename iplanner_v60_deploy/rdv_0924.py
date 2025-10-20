@@ -10,7 +10,6 @@ import cv2
 import torch
 import numpy as np
 import torchvision.transforms as transforms
-import torchvision.transforms.functional as TF 
 import os
 import json
 import threading
@@ -26,65 +25,22 @@ from matplotlib.animation import FuncAnimation
 from planner_net import PlannerNet
 from traj_cost import TrajCost
 
-print('0925 test start!!!!!!!')
-print('0925 test start!!!!!!!')
-print('0925 test start!!!!!!!')
-print('0925 test start!!!!!!!')
-print('0925 test start!!!!!!!')
-
 class RealSensePlannerControl(Node):
     def __init__(self):
         super().__init__('realsense_planner_control_viz')
 
+        self.yaw_correction_factor = 1.0 / 1.35
+        
         # ROS2 Setup
         self.bridge = CvBridge()
         self.depth_sub = self.create_subscription(Image, '/camera/camera/depth/image_rect_raw', self.depth_callback, 10)
         self.cmd_pub = self.create_publisher(Twist, '/mcu/command/manual_twist', 10)
-        # self.odom_sub = self.create_subscription(Odometry, '/command_odom', self.odom_callback, 10)
-        self.odom_sub = self.create_subscription(Odometry, '/rko_lio/odometry', self.odom_callback, 10)
-        
+        self.odom_sub = self.create_subscription(Odometry, '/command_odom', self.odom_callback, 10)
+
         # Odometry 및 웨이포인트 관련 변수
         self.current_pose = None
         # self.waypoints = [(0.0, 0.0),(5.0, 0.0), (5.0, 10.0), (20.0, 10.0), (20.0, 50.0),(-20.0, 50.0),(-20.0,10.0),(5.0,10.0)]
-        # self.waypoints = [(0.0, 0.0),(0.0, 3.0), (0.0, 0.0), (0.0, 3.0),(0.0, 0.0),(3.0, 0.0), (3.0, 3.0), (0.0, 3.0),(0.0, 0.0),(3.0, 0.0), (3.0, 3.0), (0.0, 3.0),(0.0, 0.0)] # self rotation 3
-
-
-
-        d1 = (0.0,0.0) # (-0.138,-0.227) 
-        d2 = (2.7,0 ) # (2.516,-0.336) 
-        d3 = (2.433,2.274)
-        d4 = d2 #(-2.55,5.0)
-        d5 = d1 #(-0.223,2.4)
-        d6 = d2
-        d7 = d3
-        d8 = d2
-        d9 = d1 
-        d10 =d2
-        d11= d3
-        d12= d2
-        d13= d1 
-
-        self.waypoints = [d1,d2,d3,d4,d5,d6,d7,d8,d9,d10,d11,d12,d13]
-
-        d1 = (0.0,0.0) # (-0.138,-0.227) 
-        d2 = (2.7,0 ) # (2.516,-0.336) 
-        d3 = (2.433,2.274)
-        d4 = (-0.223,2.4)
-        d5 = (-2.55,5.0)
-        d6 = d4
-        d7 = d1
-        d8 = d2
-        d9 = d3 
-        d10 =d2
-        d11= d1
-        d12= d4
-        d13= d5
-        d14= d4
-        d15= d1 
-
-        self.waypoints = [d1,d2,d3,d1,d4,d5,d6,d7,d8,d9,d10,d11,d12,d13,d14,d15]
-        
-        # self.waypoints = [(0.0, 0.0),(3.0, 0.0), (3.0, 3.0), (0.0, 3.0),(0.0, 0.0),(3.0, 0.0), (3.0, 3.0), (0.0, 3.0),(0.0, 0.0),(3.0, 0.0), (3.0, 3.0), (0.0, 3.0),(0.0, 0.0)] # self rotation 3
+        self.waypoints = [(0.0, 0.0),(3.0, 0.0), (3.0, 3.0), (0.0, 3.0),(0.0, 0.0),(3.0, 0.0), (3.0, 3.0), (0.0, 3.0),(0.0, 0.0),(3.0, 0.0), (3.0, 3.0), (0.0, 3.0),(0.0, 0.0)] # self rotation 3
         
         self.waypoint_index = 0 # len(self.waypoints)
         self.goal_threshold = 0.6
@@ -94,8 +50,6 @@ class RealSensePlannerControl(Node):
 
         self.current_depth_tensor = None
         self.angular_gain = 2.0
-
-        self.depth_cv = None
 
         # === CV2 시각화를 위한 변수들 ===
         # Intel RealSense D435의 일반적인 내장 파라미터 (640x480 기준)
@@ -114,21 +68,6 @@ class RealSensePlannerControl(Node):
 
         self.get_logger().info("✅ RealSense PlannerNet Control with Integrated Plotting has started.")
 
-
-        ## Controller Params
-        
-        # === 멋진 제어기를 위한 파라미터들 ===
-        self.max_linear_velocity = 0.5  # 로봇의 최대 직진 속도 (m/s)
-        self.min_linear_velocity = 0.15  # 로봇의 최소 직진 속도 (m/s)
-        self.max_angular_velocity = 1.0   # 로봇의 최대 회전 속도 (rad/s)
-        
-        # Pure Pursuit Controller 파라미터
-        self.look_ahead_dist_base = 0.95  # 기본 전방 주시 거리 (m)
-        self.look_ahead_dist_k = 0.3     # 속도에 비례한 전방 주시 거리 계수
-        self.turn_damping_factor = 2.5   # 회전 시 감속을 위한 계수 (클수록 급격히 감속)
-        
-
-
     def quaternion_to_yaw(self, q):
         siny_cosp = 2 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
@@ -137,7 +76,11 @@ class RealSensePlannerControl(Node):
     def odom_callback(self, msg: Odometry):
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
-        yaw = self.quaternion_to_yaw(msg.pose.pose.orientation)
+        # yaw = self.quaternion_to_yaw(msg.pose.pose.orientation)
+        raw_yaw = self.quaternion_to_yaw(msg.pose.pose.orientation)
+        yaw = raw_yaw * self.yaw_correction_factor # 보정 계수 적용
+        
+        
         with self.plot_data_lock:
             self.current_pose = [x, y, yaw]
             self.trajectory_data.append([x, y])
@@ -171,24 +114,12 @@ class RealSensePlannerControl(Node):
             depth_cv = (np.clip(depth_cv, 0, max_depth_value*1000) / 1000.0).astype(np.float32) # mm => meter range change 
             depth_cv[depth_cv>max_depth_value] = 0 # over max depth value is zero value
 
-            depth_cv = depth_cv / max_depth_value
             # 뎁스 이미지를 컬러맵으로 변환하여 시각화용 이미지 생성
-            depth_normalized = (depth_cv* 255).astype(np.uint8)
-            # depth_normalized = (depth_cv/max_depth_value* 255).astype(np.uint8)
-            # depth_normalized = (depth_cv / max_depth_value * 255).astype(np.uint8)
+            depth_normalized = (depth_cv / max_depth_value * 255).astype(np.uint8)
             depth_display = cv2.applyColorMap(depth_normalized, cv2.COLORMAP_JET)
 
             # AI 모델 입력용 텐서 생성
-
-
-            depth_tensor = torch.from_numpy(depth_cv).unsqueeze(0)
-            depth_tensor = depth_tensor.repeat(3,1,1)
-            depth_tensor = TF.resize(depth_tensor,[360,640])
-            depth_tensor = depth_tensor.unsqueeze(0)
-            self.current_depth_tensor = depth_tensor.to(self.device)
-
-            # self.current_depth_tensor = self.transform(depth_cv).unsqueeze(0).to(self.device)
-    
+            self.current_depth_tensor = self.transform(depth_cv).unsqueeze(0).to(self.device)
             
             # 시각화 스레드에서 사용할 기본 이미지 저장
             with self.plot_data_lock:
@@ -253,7 +184,7 @@ class RealSensePlannerControl(Node):
                 #         [ 4.9303e+00, -2.1319e-02,  4.4444e-03]]], device='cuda:0')
                 
 
-                # cmd_vels = self.waypoints_to_cmd_vel(waypoints_tensor)
+                # cmd_vels = self.waypoints_to_cmd_vel(waypoints_tensor) 
                 # shape = (1,5,2)
                 # tensor([[
                 # [11.2652, -4.3225],
@@ -268,56 +199,26 @@ class RealSensePlannerControl(Node):
                 fear_val = fear.cpu().item()
 
                 # select k preds  and k+H preds mean 
-                k =2
+                k =1 
                 h = 3
                 ############################################################## use pred waypoints directly control
                 angular_z = torch.clamp(cmd_vels[0, k:k+h, 1], -1.0, 1.0).mean().cpu().item()
 
-                angular_z = self._discretize_value(angular_z,0.2)
-                # angular_z = 1.5*angular_z
 
                 # main controller 
 
-                linear_x= 0.4
-                if angular_z >=0.4:
-                    linear_x = 0 
-
-
-                
-                stop_distance =  0.01 #meter # 0.77
-
-                width,height = 640,360
-
-                roi_x_start = int(width * 0.4)
-                roi_x_end   = int(width * 0.6)
-                roi_y_start = int(height* 0.4)
-                roi_y_end   = int(height* 0.6)
-
-                front_roi = self.current_depth_tensor[:,0,roi_y_start:roi_y_end,roi_x_start:roi_x_end]
-                # self.get_logger().info(f"depth :{front_roi:.2f}")
-
-                # breakpoint()
-                # # breakpoint()
-
-
+                linear_x = 0.3
                 # collision probability 
-                # if fear_val > 0.7:
-                #     linear_x=0.0
-                #     angular_z = 0.0
+                if fear_val > 0.8:
+                    linear_x=0.0
+                    angular_z = 0.0
                 
-                # # non-collision case => change to  categorical distribution 
-                # else:
-                #     if abs(angular_z)> 0.15:
-                #         linear_x = 0.0
-                #     else:
-                #         linear_x = np.clip(linear_x,0.2,0.5)
-
-                # linear_x,angular_z  = self.waypoints_to_cmd_vel(waypoints_tensor)
-
-                if torch.mean(front_roi).item() < stop_distance:
-                    linear_x   = 0.0
-                    angular_z  = 0.0
-
+                # non-collision case => change to  categorical distribution 
+                else:
+                    if abs(angular_z)> 0.15:
+                        linear_x = 0.0
+                    else:
+                        linear_x = np.clip(linear_x,0.2,0.5)
 
                 with self.plot_data_lock:
                     self.latest_preds = preds_tensor.squeeze().cpu().numpy()
@@ -342,9 +243,7 @@ class RealSensePlannerControl(Node):
 
         except Exception as e:
             self.get_logger().error(f"Control loop error: {e}\n{traceback.format_exc()}")
-    
-    def _discretize_value(self,value,step):
-        return round(value/step)*step
+            
     def _visualization_thread(self):
         """CV2 뎁스 영상과 AI 판단 정보를 보여주는 스레드"""
         self.get_logger().info("Starting CV2 visualization thread.")
@@ -407,91 +306,20 @@ class RealSensePlannerControl(Node):
         return image
 
     # don't use!! this!
-    # def waypoints_to_cmd_vel(self, waypoints, dt=0.1): # 기존과 동일
-    #     if waypoints.shape[1] < 2: return torch.zeros(1, 1, 2, device=waypoints.device)
-    #     dx = waypoints[:, 1:, 0] - waypoints[:, :-1, 0]
-    #     dy = waypoints[:, 1:, 1] - waypoints[:, :-1, 1]
-    #     linear_x = torch.sqrt(dx**2 + dy**2) / dt
-    #     heading_angles = torch.atan2(dy, dx)
-    #     angular_z = torch.zeros_like(linear_x)
-    #     if waypoints.shape[1] > 2:
-    #         angle_diff = heading_angles[:, 1:] - heading_angles[:, :-1]
-    #         angle_diff = torch.atan2(torch.sin(angle_diff), torch.cos(angle_diff))
-    #         angular_z[:, 1:] = angle_diff / dt
-    #     angular_z[:, 0] = heading_angles[:, 0] / (dt * self.angular_gain)
-    #     # return torch.stack([linear_x, angular_z], dim=-1)
-    #     return linear_x,angular_z
+    def waypoints_to_cmd_vel(self, waypoints, dt=0.1): # 기존과 동일
+        if waypoints.shape[1] < 2: return torch.zeros(1, 1, 2, device=waypoints.device)
+        dx = waypoints[:, 1:, 0] - waypoints[:, :-1, 0]
+        dy = waypoints[:, 1:, 1] - waypoints[:, :-1, 1]
+        linear_x = torch.sqrt(dx**2 + dy**2) / dt
+        heading_angles = torch.atan2(dy, dx)
+        angular_z = torch.zeros_like(linear_x)
+        if waypoints.shape[1] > 2:
+            angle_diff = heading_angles[:, 1:] - heading_angles[:, :-1]
+            angle_diff = torch.atan2(torch.sin(angle_diff), torch.cos(angle_diff))
+            angular_z[:, 1:] = angle_diff / dt
+        angular_z[:, 0] = heading_angles[:, 0] / (dt * self.angular_gain)
+        return torch.stack([linear_x, angular_z], dim=-1)
 
-
-    def waypoints_to_cmd_vel(self, waypoints_tensor):
-        """
-        주어진 지역 경로(waypoints)를 바탕으로 Pure Pursuit 알고리즘을 사용해
-        최적의 선속도(linear_x)와 각속도(angular_z)를 계산합니다.
-
-        Args:
-            waypoints_tensor (torch.Tensor): 모델이 예측한 로봇 기준 지역 경로. (N, 3) 형태.
-
-        Returns:
-            (float, float): 계산된 linear_x, angular_z
-        """
-        waypoints = waypoints_tensor.squeeze().cpu().numpy()
-        
-        # 1. 속도에 따라 동적으로 전방 주시 거리(Look-Ahead Distance) 결정
-        #    저속에서는 더 정교하게, 고속에서는 더 부드럽게 주행하도록 합니다.
-        #    (현재 속도를 모르므로, 우선 기본값으로 계산하고 나중에 선속도에 따라 조절)
-        look_ahead_dist = 1 # self.look_ahead_dist_base 
-
-        # 2. 경로 상에서 '전방 주시 점' 찾기
-        #    로봇(원점)에서 look_ahead_dist 거리만큼 떨어진 경로 위의 점을 찾습니다.
-        target_point = None
-        for i in range(len(waypoints) - 1):
-            p1 = waypoints[i]
-            p2 = waypoints[i+1]
-            # 두 웨이포인트 사이의 거리가 0에 가까우면 무시
-            if np.linalg.norm(p2 - p1) < 1e-6:
-                continue
-
-            # 원점에서 가장 가까운 경로상의 점을 찾아 거리 계산
-            dist_to_path = np.linalg.norm(np.cross(p2-p1, p1)) / np.linalg.norm(p2-p1)
-            
-            # 원과 선분의 교점을 찾는 방식으로 target_point를 근사합니다.
-            # 경로가 로봇과 멀어지기 시작하는 지점 중 가장 가까운 점을 목표로 설정
-            if p2[0] > 0 and np.linalg.norm(p2) > look_ahead_dist:
-                 target_point = p2
-                 break
-        
-        # 만약 적절한 target_point를 찾지 못했다면, 가장 마지막 웨이포인트를 목표로 삼습니다.
-        if target_point is None:
-            target_point = waypoints[-1]
-            if np.linalg.norm(target_point) < 0.1: # 목표가 너무 가까우면 정지
-                 return 0.0, 0.0
-
-        # 3. 최적 각속도(angular_z) 계산
-        #    로봇이 target_point를 향해 회전하기 위한 곡률(curvature)을 계산합니다.
-        #    alpha: 로봇의 현재 방향과 target_point 사이의 각도
-        alpha = math.atan2(target_point[1], target_point[0])
-        
-        # 곡률 = 2 * sin(alpha) / Ld. 여기서 Ld는 실제 target_point까지의 거리
-        distance_to_target = np.linalg.norm(target_point)
-        curvature = (2.0 * math.sin(alpha)) / distance_to_target
-        angular_z = curvature * self.max_linear_velocity # 임시 선속도로 각속도 계산
-        
-        # 4. 최적 선속도(linear_x) 계산
-        #    회전이 클수록(곡률이 클수록) 선속도를 줄여 안정적인 코너링을 수행합니다.
-        linear_x = self.max_linear_velocity / (1 + self.turn_damping_factor * abs(curvature))
-        linear_x = np.clip(linear_x, self.min_linear_velocity, self.max_linear_velocity)
-
-        # 5. 최종 제어값 정규화 (클리핑)
-        angular_z = np.clip(angular_z, -self.max_angular_velocity, self.max_angular_velocity)
-        
-        # 재계산: 최종 선속도에 맞춰 각속도를 다시 한번 스케일링
-        angular_z = curvature * linear_x
-        angular_z = np.clip(angular_z, -self.max_angular_velocity, self.max_angular_velocity)
-
-        return linear_x, angular_z
-    
-
-    
     def destroy_node(self):
         self.get_logger().info("Shutting down...")
         self.running = False
@@ -549,7 +377,7 @@ def main(args=None):
     ros_thread.start()
 
     # Matplotlib 설정 (이전과 동일)
-    fig, ax = plt.subplots(figsize=(10, 10),constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(10, 10))
     # ... (내용은 이전과 동일하므로 생략) ...
     ax.set_title('Real-time Trajectory and PlannerNet Prediction')
     ax.set_xlabel('-Y Position (m)')
@@ -586,3 +414,4 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+

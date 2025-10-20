@@ -1,6 +1,7 @@
 # pt files and checkoints
 checkpoints/
 
+./realsense/opencv
 *.pt
 *.pth
 *.packaging

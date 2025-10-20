@@ -29,8 +29,8 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Top view 설정
 TOP_VIEW_WIDTH = 800
 TOP_VIEW_HEIGHT = 600
-MAX_DISTANCE = 10.0  # 최대 거리 (미터)
-MIN_DISTANCE = 0.5   # 최소 거리 (미터)
+MAX_DISTANCE = 7.0  # 최대 거리 (미터)
+MIN_DISTANCE = 0.54   # 최소 거리 (미터)
 PIXELS_PER_METER = 40  # 미터당 픽셀 수
 
 # 클래스 정보
