@@ -25,10 +25,13 @@ MODEL_PATH = "best_model2.pth"
 
 # MODEL_PATH = "seg_model_epoch_100.pth"
 
-INFERENCE_SIZE = 256
+
 # best_model2.pth  best_model.pth  best_seg_model.pth seg_model_epoch_100.pth
 # 3. 추론에 사용할 디바이스 설정
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# --- 변경 사항 1: 추론에 사용할 이미지 크기 설정 ---
+INFERENCE_SIZE = (512, 512) # (너비, 높이)
 
 # --- 학습 스크립트에서 가져온 클래스 정보 ---
 CLASS_TO_IDX = {
@@ -55,8 +58,7 @@ class DirectSegFormer(nn.Module):
                 num_labels=num_classes,
                 ignore_mismatched_sizes=True,
                 trust_remote_code=True,
-                torch_dtype=torch.float32,
-                use_safetensors=True,
+                torch_dtype=torch.float32
             )
         except ValueError as e:
             if "torch.load" in str(e):
@@ -88,7 +90,6 @@ class SegformerViewerNode(Node):
 
         # 3) Image preprocessing pipeline (학습 스크립트와 동일한 정규화 사용)
         self.transform = transforms.Compose([
-            # transforms.Resize((224,224)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
@@ -175,8 +176,12 @@ class SegformerViewerNode(Node):
 
         original_h, original_w, _ = img_bgr.shape
 
-        # 1) 이미지 전처리
-        input_tensor = self.preprocess_image(img_bgr)
+        # --- 변경 사항 2: 이미지 리사이즈 ---
+        # 모델 입력 전에 이미지를 학습 크기(512x512)로 리사이즈
+        resized_img = cv2.resize(img_bgr, INFERENCE_SIZE, interpolation=cv2.INTER_LINEAR)
+        
+        # 1) 리사이즈된 이미지 전처리
+        input_tensor = self.preprocess_image(resized_img)
 
         # 2) 추론 수행
         with torch.no_grad():
@@ -184,10 +189,11 @@ class SegformerViewerNode(Node):
             logits = self.model(input_tensor)
 
         # 3) 결과 후처리
-        # 로짓을 원본 이미지 크기로 업샘플링
+        # --- 변경 사항 3: 원본 크기로 업샘플링 ---
+        # 로짓을 원본 이미지 크기로 업샘플링하여 오버레이
         upsampled_logits = F.interpolate(
             logits,
-            size=(original_h, original_w),
+            size=(original_h, original_w), # 여기서 원본 크기 사용
             mode='bilinear',
             align_corners=False
         )

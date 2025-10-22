@@ -83,11 +83,29 @@ class RealSensePlannerControl(Node):
         d15= d1 
 
         self.waypoints = [d1,d2,d3,d1,d4,d5,d6,d7,d8,d9,d10,d11,d12,d13,d14,d15]
+
+  
+        d0 = (0.6,3.5)
+        d1 = (1.25,1.4)
+        d2 = (4.189,-0.16667)
+
+        self.waypoints = [d1,d2,d1,d0]
         
-        # self.waypoints = [(0.0, 0.0),(3.0, 0.0), (3.0, 3.0), (0.0, 3.0),(0.0, 0.0),(3.0, 0.0), (3.0, 3.0), (0.0, 3.0),(0.0, 0.0),(3.0, 0.0), (3.0, 3.0), (0.0, 3.0),(0.0, 0.0)] # self rotation 3
+        ## outdoor test 
+
+
+        d1 = (8.443,-12.5992) # start 
+        d2 = (17.57,-10.975)  # front of krm 
+        d3 = (45.24,-86.77)   # port can coffee
+        d4 = (151.7,-51.22)   # nearby port can coffee 
+
+        self.waypoints = [d1,d2,d3,d4,d3,d2,d1]
+        
+        
+        self.waypoints = [(0.0, 0.0),(2.5, 0.0), (2.5, 2.5), (0.0, 2.5),(0.0, 0.0),(2.6, 0.0), (2.6, 2.6), (0.0, 2.4),(0.0, 0.0),(2.6, 0.0), (2.0, 1.6), (0.0, 2.0),(0.0, 0.0)] # self rotation 3
         
         self.waypoint_index = 0 # len(self.waypoints)
-        self.goal_threshold = 0.6
+        self.goal_threshold = 0.7
 
         self.control_timer = self.create_timer(0.1, self.control_callback)
         self.setup_planner()
@@ -127,7 +145,6 @@ class RealSensePlannerControl(Node):
         self.look_ahead_dist_k = 0.3     # 속도에 비례한 전방 주시 거리 계수
         self.turn_damping_factor = 2.5   # 회전 시 감속을 위한 계수 (클수록 급격히 감속)
         
-
 
     def quaternion_to_yaw(self, q):
         siny_cosp = 2 * (q.w * q.z + q.x * q.y)
@@ -231,11 +248,14 @@ class RealSensePlannerControl(Node):
             # global difference vector : target - current 
             dx_global, dy_global = target_wp[0] - current_x, target_wp[1] - current_y
             
+            # current_yaw+=math.pi #180 degree
             # local goal position : Rotation transform 
             local_x = dx_global * math.cos(current_yaw) + dy_global * math.sin(current_yaw)
             local_y = -dx_global * math.sin(current_yaw) + dy_global * math.cos(current_yaw)
             local_goal_tensor = torch.tensor([local_x, local_y, 0.0], dtype=torch.float32).unsqueeze(0).to(self.device)
             # tensor([[5., 0., 0.]], device='cuda:0')
+            
+            # ego state transform
             
             with torch.no_grad():
                 preds_tensor, fear = self.net(self.current_depth_tensor, local_goal_tensor)
@@ -284,16 +304,31 @@ class RealSensePlannerControl(Node):
 
 
                 
-                stop_distance =  0.01 #meter # 0.77
+                stop_distance =  0.1 #meter # 0.77
 
                 width,height = 640,360
-
+                """
                 roi_x_start = int(width * 0.4)
                 roi_x_end   = int(width * 0.6)
                 roi_y_start = int(height* 0.4)
                 roi_y_end   = int(height* 0.6)
 
-                front_roi = self.current_depth_tensor[:,0,roi_y_start:roi_y_end,roi_x_start:roi_x_end]
+                front_roi = self.current_depth_tensor[:,0,roi_y_start:roi_y_end,roi_x_start:roi_x_end] # middle side roi
+
+                roi_x_start = int(width * 0.1)
+                roi_x_end   = int(width * 0.3)
+                roi_y_start = int(height* 0.4)
+                roi_y_end   = int(height* 0.6)
+
+                left_roi = self.current_depth_tensor[:,0,roi_y_start:roi_y_end,roi_x_start:roi_x_end] # left side roi
+
+                roi_x_start = int(width * 0.7)
+                roi_x_end   = int(width * 0.9)
+                roi_y_start = int(height* 0.4)
+                roi_y_end   = int(height* 0.6)
+
+                right_roi = self.current_depth_tensor[:,0,roi_y_start:roi_y_end,roi_x_start:roi_x_end] # right side roi 
+
                 # self.get_logger().info(f"depth :{front_roi:.2f}")
 
                 # breakpoint()
@@ -318,6 +353,14 @@ class RealSensePlannerControl(Node):
                     linear_x   = 0.0
                     angular_z  = 0.0
 
+                if torch.mean(left_roi).item() < stop_distance:
+                    linear_x   = 0.0
+                    angular_z  = -0.6
+
+                if torch.mean(right_roi).item() < stop_distance:
+                    linear_x   = 0.0
+                    angular_z  = 0.6
+                """
 
                 with self.plot_data_lock:
                     self.latest_preds = preds_tensor.squeeze().cpu().numpy()
@@ -523,6 +566,9 @@ def update_plot(frame, node, ax, traj_line, preds_points, waypoints_line, curren
     traj_line.set_data(-traj_arr[:, 1], traj_arr[:, 0])
 
     current_x, current_y, current_yaw = pose
+
+    # current_yaw += math.pi # 180 degree 
+    
     current_point.set_data([-current_y], [current_x])
     heading_len = 0.5
     heading_end_x = current_x + heading_len * math.cos(current_yaw)

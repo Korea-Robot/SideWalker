@@ -1,27 +1,28 @@
-krm@ubuntu:~/segformer/polygon$ python3 polygon_segformer_inference.py 
-/usr/lib/python3/dist-packages/scipy/__init__.py:146: UserWarning: A NumPy version >=1.17.3 and <1.25.0 is required for this version of SciPy (detected version 1.26.1
-  warnings.warn(f"A NumPy version >={np_minversion} and <{np_maxversion}"
-1756297910.648494 [123] pt_main_th: config: //CycloneDDS/Domain/General: 'NetworkInterfaceAddress': deprecated element (file:///home/krm/.cyclonedds.xml line 8)
-[INFO] [1756297910.718256082] [realsense_inference_node]: Realsense Inference node has started.
+python3 semantic_bev_node.py
+1761051774.925436 [123] pt_main_th: config: //CycloneDDS/Domain/General: 'NetworkInterfaceAddress': deprecated element (file:///home/krm/.cyclonedds.xml line 8)
+[INFO] [1761051775.037210940] [realtime_semantic_bev_node]: Using device: cuda
+Some weights of SegformerForSemanticSegmentation were not initialized from the model checkpoint at nvidia/mit-b0 and are newly initialized: ['decode_head.batch_norm.bias', 'decode_head.batch_norm.num_batches_tracked', 'decode_head.batch_norm.running_mean', 'decode_head.batch_norm.running_var', 'decode_head.batch_norm.weight', 'decode_head.classifier.bias', 'decode_head.classifier.weight', 'decode_head.linear_c.0.proj.bias', 'decode_head.linear_c.0.proj.weight', 'decode_head.linear_c.1.proj.bias', 'decode_head.linear_c.1.proj.weight', 'decode_head.linear_c.2.proj.bias', 'decode_head.linear_c.2.proj.weight', 'decode_head.linear_c.3.proj.bias', 'decode_head.linear_c.3.proj.weight', 'decode_head.linear_fuse.weight']
+You should probably TRAIN this model on a down-stream task to be able to use it for predictions and inference.
+[INFO] [1761051778.636358071] [realtime_semantic_bev_node]: ✅ Successfully loaded model weights from 'best_model.pth'.
 Traceback (most recent call last):
-  File "/home/krm/segformer/polygon/polygon_segformer_inference.py", line 174, in <module>
+  File "/home/krm/SideWalker/segformer/polygon/semantic_bev_node.py", line 309, in <module>
     main()
-  File "/home/krm/segformer/polygon/polygon_segformer_inference.py", line 160, in main
-    node = SemanticInferenceNode()
-  File "/home/krm/segformer/polygon/polygon_segformer_inference.py", line 67, in __init__
-    self.model = self.load_model()
-  File "/home/krm/segformer/polygon/polygon_segformer_inference.py", line 88, in load_model
-    model = SegformerForSemanticSegmentation.from_pretrained(
-  File "/home/krm/.local/lib/python3.10/site-packages/transformers/modeling_utils.py", line 317, in _wrapper
-    return func(*args, **kwargs)
-  File "/home/krm/.local/lib/python3.10/site-packages/transformers/modeling_utils.py", line 5074, in from_pretrained
-    ) = cls._load_pretrained_model(
-  File "/home/krm/.local/lib/python3.10/site-packages/transformers/modeling_utils.py", line 5340, in _load_pretrained_model
-    load_state_dict(checkpoint_files[0], map_location="meta", weights_only=weights_only).keys()
-  File "/home/krm/.local/lib/python3.10/site-packages/transformers/modeling_utils.py", line 562, in load_state_dict
-    check_torch_load_is_safe()
-  File "/home/krm/.local/lib/python3.10/site-packages/transformers/utils/import_utils.py", line 1622, in check_torch_load_is_safe
-    raise ValueError(
-ValueError: Due to a serious vulnerability issue in `torch.load`, even with `weights_only=True`, we now require users to upgrade torch to at least v2.6 in order to use the function. This version restriction does not apply when loading files with safetensors.
-See the vulnerability report here https://nvd.nist.gov/vuln/detail/CVE-2025-32434
-
+  File "/home/krm/SideWalker/segformer/polygon/semantic_bev_node.py", line 301, in main
+    rclpy.spin(node)
+  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py", line 229, in spin
+    executor.spin_once()
+  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 751, in spin_once
+    self._spin_once_impl(timeout_sec)
+  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 748, in _spin_once_impl
+    raise handler.exception()
+  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/task.py", line 254, in __call__
+    self._handler.send(None)
+  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 447, in handler
+    await call_coroutine(entity, arg)
+  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 361, in _execute_timer
+    await await_or_execute(tmr.callback)
+  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 107, in await_or_execute
+    return callback(*args)
+  File "/home/krm/SideWalker/segformer/polygon/semantic_bev_node.py", line 197, in process_and_visualize
+    bev_colored = cv2.LUT(semantic_bev,self.bev_colormap_cv)
+cv2.error: OpenCV(4.12.0) /io/opencv/modules/core/src/lut.cpp:159: error: (-215:Assertion failed) (lutcn == cn || lutcn == 1) && _lut.total() == 256 && _lut.isContinuous() && (depth == CV_8U || depth == CV_8S) in function 'LUT'
