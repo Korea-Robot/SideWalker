@@ -115,3 +115,59 @@ roi:
   width: 0
   do_rectify: false
 ---
+
+
+ros2 topic echo /camera/camera/extrinsics/depth_to_color
+1761122179.085108 [123]       ros2: config: //CycloneDDS/Domain/General: 'NetworkInterfaceAddress': deprecated element (file:///home/krm/.cyclonedds.xml line 8)
+rotation:
+- 0.999993622303009
+- -0.0006787928286939859
+- -0.0035094195045530796
+- 0.0006689286092296243
+- 0.9999958276748657
+- -0.0028111860156059265
+- 0.0035113131161779165
+- 0.002808820456266403
+- 0.9999898672103882
+translation:
+- -0.05926649272441864
+- 1.0062108231068123e-05
+- 0.0007165665156207979
+
+
+
+
+krm@ubuntu:~$ rviz
+bash: rviz: command not found
+krm@ubuntu:~$ ros2 topic echo /camera/camera/depth/color/points
+
+
+---
+header:
+  stamp:
+    sec: 1761122539
+    nanosec: 465128418
+  frame_id: camera_depth_optical_frame
+height: 1
+width: 352346
+fields:
+- name: x
+  offset: 0
+  datatype: 7
+  count: 1
+- name: y
+  offset: 4
+  datatype: 7
+  count: 1
+- name: z
+  offset: 8
+  datatype: 7
+  count: 1
+- name: rgb
+  offset: 16
+  datatype: 7
+  count: 1
+is_bigendian: false
+point_step: 20
+row_step: 7046920
+data:

@@ -1,6 +1,10 @@
 # pt files and checkoints
 checkpoints/
 
+./realsense/
+realsense/opencv
+realsense/opencv-python
+
 ./realsense/opencv
 *.pt
 *.pth

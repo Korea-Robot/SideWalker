@@ -13,9 +13,13 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 class krm_traject_planningNode(Node):
     def __init__(self):
         super().__init__('pointcloud_pub')
-        self.bridge = CvBridge()
-        self.camera_info = None
         
+        # ROS image msg <--transformation--> opencv image 
+        self.bridge = CvBridge()
+
+        # intrinsic : camera_info : default constant
+        
+        # reliable QoS profile setting
         qos_profile = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
@@ -23,25 +27,35 @@ class krm_traject_planningNode(Node):
         )
         
         # subscribe topic 
-        self.create_subscription(Image, '/camera/camera/depth/image_rect_raw', self.depth_callback, qos_profile)
-        self.create_subscription(CameraInfo, '/camera/camera/depth/camera_info', self.info_callback, qos_profile)
+        self.create_subscription(Image, '/camera/camera/depth/image_rect_raw', self.depth_callback, qos_profile)  # depth camera image
+        # self.create_subscription(CameraInfo, '/camera/camera/depth/camera_info', self.depth_info_callback, qos_profile) # depth camera intrinsic
+        # use default intrinsic value  
+ 
+        # self.create_subscription(Image, '/camera/camera/color/image_rect_raw', self.rgb_callback, qos_profile)  # rgb camera image
+        # self.create_subscription(CameraInfo, '/camera/camera/color/camera_info', self.rgb_info_callback, qos_profile) # rgb camera intrinsic 
 
         # pusblish topic 
         #self.pcl_pub = self.create_publisher(PointCloud2, '/pcl/output', qos_profile)
         self.robot_pcl_pub = self.create_publisher(PointCloud2, '/pointcloud', qos_profile)
         #self.path_pcl_pub = self.create_publisher(PointCloud2, '/pcl/fil_output', qos_profile)
 
+
         # self.target_frame_id='camera_depth_optical_frame'
-        self.target_frame_id='body'
+        
+        # final target coordinates
+        self.target_frame_id='body' # TF(transform) : homogeneous transformation 
+
+        # TF buffer 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
-        self.s_digity= 3 
-        self.s_digitx= 2
+
+        # down sampling ratio : y axis : 3PIXEL  X axis : 2 pixel => 1point 
+        self.s_digity= 9 #3 
+        self.s_digitx= 6 #2
         # 360 2 2 -> 57600
         # 640 3 3 -> 38400
 
-    def info_callback(self, msg):
-        self.camera_info = msg
+
     def make_array(self,selected_image,transformed_cloud):
         
         transformed_cloud_x=transformed_cloud[::self.s_digity,::self.s_digitx,0]
@@ -87,14 +101,16 @@ class krm_traject_planningNode(Node):
         points_arr=np.stack((transformed_cloud_x, transformed_cloud_y, transformed_cloud_z), axis=-1)
         colors_arr=np.stack((r_arr, g_arr, b_arr), axis=-1)
         return points_arr.reshape(-1,3),colors_arr.reshape(-1,3)
+
+
+
     def depth_callback(self, msg):
         #self.get_logger().info("Elapsed time: ms")
-        if self.camera_info is None:
-            return
+
         #self.get_logger().info(msg) 
         depth_cv = self.bridge.imgmsg_to_cv2(msg, desired_encoding=msg.encoding).astype(np.float32) / 1000.0
         #self.get_logger().info("{:}".format(depth_cv)) 
-        point_cloud = self.depth_to_point_cloud_with_camera_info(depth_cv, self.camera_info)
+        point_cloud = self.depth_to_point_cloud_with_camera_info(depth_cv)
         #point_cloud_modi = point_cloud[point_cloud[:, 2] < 2.0]
         #360 640 3 에서 -1,3으로
         point_cloud_modi=point_cloud.reshape(-1,3)
@@ -117,10 +133,10 @@ class krm_traject_planningNode(Node):
         except TransformException as e:
             self.get_logger().error(f'TF Error: {e}')
 
-    def depth_to_point_cloud_with_camera_info(self, depth_map, camera_info):
-        K = np.array(camera_info.k).reshape(3, 3)
-        fx, fy = K[0, 0], K[1, 1]
-        cx, cy = K[0, 2], K[1, 2]
+    def depth_to_point_cloud_with_camera_info(self, depth_map):
+        # K = np.array(camera_info.k).reshape(3, 3)
+        fx, fy = 431.0625, 431.0625 # K[0, 0], K[1, 1]
+        cx, cy = 434.492, 242.764 # K[0, 2], K[1, 2]
         height, width = depth_map.shape
         #mask = (depth_map > 0.2) & (depth_map < 2.0)
         #v, u = np.where(mask)

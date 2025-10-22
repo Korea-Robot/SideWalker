@@ -1,44 +1,21 @@
-python navigation_iplanner_viz.py 
-1755784030.190047 [123] pt_main_th: config: //CycloneDDS/Domain/General: 'NetworkInterfaceAddress': deprecated element (file:///home/krm/.cyclonedds.xml line 8)
-[INFO] [1755784030.769941950] [realsense_planner_control_viz]: PlannerNet model loaded successfully on cuda
-[INFO] [1755784030.772733449] [realsense_planner_control_viz]: Starting visualization thread.
-[INFO] [1755784030.773134629] [realsense_planner_control_viz]: ✅ RealSense PlannerNet Control with Visualization has started.
-[INFO] [1755784031.263214435] [realsense_planner_control_viz]: Shutting down...
-[INFO] [1755784031.266169868] [realsense_planner_control_viz]: Visualization thread stopped.
-Traceback (most recent call last):
-  File "/home/krm/World/iplanner/navigation_iplanner_viz.py", line 211, in control_callback
-    final_img = self.draw_path_and_direction(img_to_draw, waypoints, angular_z)
-  File "/home/krm/World/iplanner/navigation_iplanner_viz.py", line 146, in draw_path_and_direction
-    for i, (wp_x, wp_y) in enumerate(waypoints):
-ValueError: too many values to unpack (expected 2)
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/home/krm/World/iplanner/navigation_iplanner_viz.py", line 250, in <module>
-    main()
-  File "/home/krm/World/iplanner/navigation_iplanner_viz.py", line 241, in main
-    rclpy.spin(node)
-  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py", line 229, in spin
-    executor.spin_once()
-  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 751, in spin_once
-    self._spin_once_impl(timeout_sec)
-  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 748, in _spin_once_impl
-    raise handler.exception()
-  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/task.py", line 254, in __call__
-    self._handler.send(None)
-  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 447, in handler
-    await call_coroutine(entity, arg)
-  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 361, in _execute_timer
-    await await_or_execute(tmr.callback)
-  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 107, in await_or_execute
-    return callback(*args)
-  File "/home/krm/World/iplanner/navigation_iplanner_viz.py", line 224, in control_callback
-    self.get_logger().error(f"Control loop error: {e}", exc_info=True)
-  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/impl/rcutils_logger.py", line 345, in error
-    return self.log(message, LoggingSeverity.ERROR, **kwargs)
-  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/impl/rcutils_logger.py", line 284, in log
-    detected_filters = get_filters_from_kwargs(**kwargs)
-  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/impl/rcutils_logger.py", line 207, in get_filters_from_kwargs
-    raise TypeError(
-TypeError: parameter "exc_info" is not one of the recognized logging options "['throttle_duration_sec', 'throttle_time_source_type', 'skip_first', 'once']"
+[ERROR] [1761136046.543297471] [semantic_pointcloud_node]: 처리 오류: Unexpected type <class 'numpy.ndarray'>
+[ERROR] [1761136046.544140982] [semantic_pointcloud_node]: Traceback (most recent call last):
+  File "/home/krm/SideWalker/iplanner_v60_deploy/semantic_point_node.py", line 279, in synchronized_callback
+    semantic_mask = self.run_segmentation(rgb_image)
+  File "/home/krm/SideWalker/iplanner_v60_deploy/semantic_point_node.py", line 362, in run_segmentation
+    input_tensor = self.transform(rgb_image_rgb)
+  File "/home/krm/.local/lib/python3.10/site-packages/torchvision/transforms/transforms.py", line 95, in __call__
+    img = t(img)
+  File "/home/krm/.local/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1532, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/krm/.local/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1541, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/krm/.local/lib/python3.10/site-packages/torchvision/transforms/transforms.py", line 354, in forward
+    return F.resize(img, self.size, self.interpolation, self.max_size, self.antialias)
+  File "/home/krm/.local/lib/python3.10/site-packages/torchvision/transforms/functional.py", line 456, in resize
+    _, image_height, image_width = get_dimensions(img)
+  File "/home/krm/.local/lib/python3.10/site-packages/torchvision/transforms/functional.py", line 80, in get_dimensions
+    return F_pil.get_dimensions(img)
+  File "/home/krm/.local/lib/python3.10/site-packages/torchvision/transforms/_functional_pil.py", line 31, in get_dimensions
+    raise TypeError(f"Unexpected type {type(img)}")
+TypeError: Unexpected type <class 'numpy.ndarray'>
