@@ -57,7 +57,7 @@ class ReconstructionConfig:
     # ============================================================================
     # Semantic Model Settings
     # ============================================================================
-    use_semantic: bool = False # True  # False로 설정하면 RGB만 사용
+    use_semantic: bool =  True  # False로 설정하면 RGB만 사용
     
     # 사용할 모델 타입을 선택합니다.
     # __post_init__에서 이 값에 따라 다른 설정들이 동적으로 로드됩니다.
@@ -66,8 +66,8 @@ class ReconstructionConfig:
     # "custom-object", "custom-surface", 
     # "segformer-cityscapes", "maskformer-cityscapes",
     # "segformer-ade20k", "maskformer-coco"
-    # model_type: str ="maskformer-cityscapes"
-    model_type: str ="segformer-cityscapes"
+    model_type: str ="maskformer-cityscapes"
+    # model_type: str ="segformer-cityscapes"
 
     # --- Custom Model Paths ---
     custom_model_path: str = "best_object_model.pth"

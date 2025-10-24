@@ -215,7 +215,7 @@ class RealSensePlannerControl(Node):
         self.bridge = CvBridge()
         self.depth_sub = self.create_subscription(Image, '/camera/camera/depth/image_rect_raw', self.depth_callback, 10)
         self.cmd_pub = self.create_publisher(Twist, '/mcu/command/manual_twist', 10)
-        self.odom_sub = self.create_subscription(Odometry, '/rko_lio/odometry', self.odom_callback, 10)
+        self.odom_sub = self.create_subscription(Odometry, '/krm_auto_localization/odom', self.odom_callback, 10)
         
         # Odometry 및 웨이포인트 관련 변수
         self.current_pose = None
