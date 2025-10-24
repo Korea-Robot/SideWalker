@@ -41,7 +41,7 @@ MODEL_TYPE = "custom"  # 여기서 변경하세요!
 
 MODEL_TYPE = "custom"              # 기본 - 학습한 커스텀 모델
 MODEL_TYPE = "segformer-ade20k"  # SegFormer ADE20k (150 classes)
-MODEL_TYPE = "maskformer-coco"   # MaskFormer COCO Panoptic (133 classes)
+# MODEL_TYPE = "maskformer-coco"   # MaskFormer COCO Panoptic (133 classes)
 
 # Custom 모델 설정
 CUSTOM_MODEL_PATH = "./models/dynamic_object/best_model2.pth"
@@ -213,8 +213,9 @@ class SemanticPointCloudNode(Node):
         
         # 좌표계 설정
         self.source_frame = 'camera_depth_optical_frame'
-        self.target_frame = 'body'
-        
+        # self.target_frame = 'body'
+        self.target_frame = 'camera_link'
+
         # 카메라 내부 파라미터 - Depth (Intel RealSense D455)
         self.depth_fx = 431.0625
         self.depth_fy = 431.0625

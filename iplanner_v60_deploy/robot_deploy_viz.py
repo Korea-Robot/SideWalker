@@ -41,7 +41,10 @@ class RealSensePlannerControl(Node):
         self.depth_sub = self.create_subscription(Image, '/camera/camera/depth/image_rect_raw', self.depth_callback, 10)
         self.cmd_pub = self.create_publisher(Twist, '/mcu/command/manual_twist', 10)
         # self.odom_sub = self.create_subscription(Odometry, '/command_odom', self.odom_callback, 10)
-        self.odom_sub = self.create_subscription(Odometry, '/rko_lio/odometry', self.odom_callback, 10)
+        # self.odom_sub = self.create_subscription(Odometry, '/rko_lio/odometry', self.odom_callback, 10)
+        self.odom_sub = self.create_subscription(Odometry, '/krm_auto_localization/odom', self.odom_callback, 10)
+   
+
         
         # Odometry 및 웨이포인트 관련 변수
         self.current_pose = None
@@ -85,24 +88,24 @@ class RealSensePlannerControl(Node):
         self.waypoints = [d1,d2,d3,d1,d4,d5,d6,d7,d8,d9,d10,d11,d12,d13,d14,d15]
 
   
-        d0 = (0.6,3.5)
-        d1 = (1.25,1.4)
-        d2 = (4.189,-0.16667)
+        # d0 = (0.6,3.5)
+        # d1 = (1.25,1.4)
+        # d2 = (4.189,-0.16667)
 
-        self.waypoints = [d1,d2,d1,d0]
+        # self.waypoints = [d1,d2,d1,d0]
         
-        ## outdoor test 
+        # ## outdoor test 
 
 
-        d1 = (8.443,-12.5992) # start 
-        d2 = (17.57,-10.975)  # front of krm 
-        d3 = (45.24,-86.77)   # port can coffee
-        d4 = (151.7,-51.22)   # nearby port can coffee 
+        # d1 = (8.443,-12.5992) # start 
+        # d2 = (17.57,-10.975)  # front of krm 
+        # d3 = (45.24,-86.77)   # port can coffee
+        # d4 = (151.7,-51.22)   # nearby port can coffee 
 
-        self.waypoints = [d1,d2,d3,d4,d3,d2,d1]
+        # self.waypoints = [d1,d2,d3,d4,d3,d2,d1]
         
         
-        self.waypoints = [(0.0, 0.0),(2.5, 0.0), (2.5, 2.5), (0.0, 2.5),(0.0, 0.0),(2.6, 0.0), (2.6, 2.6), (0.0, 2.4),(0.0, 0.0),(2.6, 0.0), (2.0, 1.6), (0.0, 2.0),(0.0, 0.0)] # self rotation 3
+        # self.waypoints = [(0.0, 0.0),(2.5, 0.0), (2.5, -2.5), (0.0, -2.5),(0.0, 0.0),(2.6, 0.0), (2.6, 2.6), (0.0, 2.4),(0.0, 0.0),(2.6, 0.0), (2.0, 1.6), (0.0, 2.0),(0.0, 0.0)] # self rotation 3
         
         self.waypoint_index = 0 # len(self.waypoints)
         self.goal_threshold = 0.7
