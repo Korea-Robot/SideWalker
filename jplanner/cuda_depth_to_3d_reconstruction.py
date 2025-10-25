@@ -24,35 +24,29 @@ class PointCloudReconstructionNode(Node):
         
         # QoS 프로파일 설정 (안정적인 통신을 위해)
         qos_profile = QoSProfile(
-            # reliability=ReliabilityPolicy.RELIABLE, # 메세지가 중간에 유실되면 수신측에서 받을때까지  재전송 시도 , BEST_EFFORT : 유실돼도 재전송 안함. 빠름.
-            reliability=ReliabilityPolicy.BEST_EFFORT, # BEST_EFFORT : 유실돼도 재전송 안함. 빠름.
-            history=HistoryPolicy.KEEP_LAST, # latest priority  # 메세지를 수신할때 정해진 개수 만큼 최신 메시지만 저장.
-            # extroceptive sensor는 최신 데이터가 가장 중요하기에 무조건 설정해야함.
-            
-            depth=10 # 메시지 큐 (버퍼,임시 저장공간)의 크기를 10으로 저장함. 11번째 메시지가 들어오면 오래된 메시지는 버림. : 데이터처리보다 데이터 들어오는 속도 빠를때 메모리 넘치는것 방지. 
-            # 만약에 과거의 데이터를 모두 처리해야할 경우에 크게 설정해야함.
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
         )
         
         # Depth 카메라 토픽 구독
-        self.create_subscription(  # 이 체널에 오는 데이터 받음. 
-            Image,                 # 구독할 메시지의 타입 지정 
-            '/camera/camera/depth/image_rect_raw', # 여기 토픽이름으로 발행되는 모든 Image타입 메시지를 받겠다는것. 
-            self.depth_callback,   # 토픽에서 메시지가 수신될때마다 자동으로 실행할 함수 지정.
-            # 즉, 이미지가 도착하면  self.depth_callback 함수를 호출하여 그 이미지 데이터를 전달해줌. 
-            # 따라서 이미지 처리 로직은 위 함수에 구현되어야함.
-            qos_profile # subscriber에 적용할 QoS 세팅 전달. quality of service 
+        self.create_subscription(
+            Image, 
+            '/camera/camera/depth/image_rect_raw', 
+            self.depth_callback, 
+            qos_profile
         )
         
         # Point Cloud 발행자
         self.pointcloud_pub = self.create_publisher(
-            PointCloud2,    # 3D space multiple points (x,y,z,rgb,intensity) 등 집합을 표현하는 표준 데이터 형식 
+            PointCloud2, 
             '/pointcloud', 
             qos_profile
         )
         
         # TF 변환을 위한 버퍼 및 리스너
-        self.tf_buffer = Buffer() # tf2_ros : Buffer class  : ros2 network all TF info get 
-        self.tf_listener = TransformListener(self.tf_buffer, self) # 
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
         
         # 좌표계 설정
         self.source_frame = 'camera_depth_optical_frame' # 원본 좌표계 (카메라)
@@ -68,8 +62,6 @@ class PointCloudReconstructionNode(Node):
         self.downsample_y = 9
         self.downsample_x = 6
         
-        
-        # PointCloud2 msg define : data structure
         # Point Cloud 필드 정의 (포인트당 16바이트)
         # x, y, z 각각 4바이트 (FLOAT32)
         # rgb 4바이트 (FLOAT32로 패킹된 UINT32)
@@ -78,8 +70,7 @@ class PointCloudReconstructionNode(Node):
             PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
             PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
             PointField(name='rgb', offset=12, datatype=PointField.FLOAT32, count=1),
-        ] # total 16 bytes = x,y,z 12 bytes + rgb 4 bytes
-        
+        ]
         
         # GPU 설정 (CUDA 사용 고정)
         self.device = torch.device('cuda')
@@ -90,31 +81,11 @@ class PointCloudReconstructionNode(Node):
         
         self.get_logger().info('Point Cloud Reconstruction Node initialized (GPU Only)')
 
-        self.extrinsic_matrix = None # initialize
-        while self.extrinsic_matrix is None and rclpy.ok():
-            try:
-                transform = self.tf_buffer.lookup_transform(
-                    self.target_frame,
-                    self.source_frame,
-                    rclpy.time.Time(), # latest TF
-                    timeout = rclpy.duration.Duration(seconds=1.0)
-                )
-                self.extrinsic_matrix = self.transform_to_matrix(transform)
-                self.get_logger().info('camera -> body static tf success!!')
-            except TransformException as e:
-                self.get_logger().warn('static TF respond... 1sec after retry')
-            
-        if self.extrinsic_matrix is None:
-            self.get_logger().error('static TF node failed!!')
-            rclpy.shutdown() # TF must be exist!!!
-                    
-            
-
     def _init_gpu_parameters(self):
         """GPU에서 사용할 파라미터 미리 생성"""
         
         # 이미지 크기 (Intel RealSense D435의 848x480 해상도 기준)
-        height, width = 480, 848 # Q : how to reduce size? for compute efficiency? 480 640 is enough? but intrinsic must be changed
+        height, width = 480, 848
         
         # 픽셀 좌표(v, u) 그리드를 미리 생성
         # indexing='ij'는 (height, width) 순서(행 우선)로 그리드를 생성
@@ -123,8 +94,6 @@ class PointCloudReconstructionNode(Node):
             torch.arange(width, device=self.device, dtype=torch.float32),
             indexing='ij'
         )
-        # v all y pixel value
-        # u all x pixel value 
         
         # 3D 계산에 필요한 상수들을 미리 GPU 텐서로 만들어 둠
         # z * (u - cx) / fx = x
@@ -138,8 +107,6 @@ class PointCloudReconstructionNode(Node):
         
         self.get_logger().info(f'GPU 파라미터 초기화 완료 ({height}x{width})')
 
-    
-    # sub depth topic => callback function 
     def depth_callback(self, msg):
         """Depth 이미지를 수신하여 Point Cloud로 변환하고 발행"""
         
@@ -158,20 +125,17 @@ class PointCloudReconstructionNode(Node):
             
             # 3. TF 조회 (CPU)
             # 'camera_depth_optical_frame'에서 'body'로의 변환(Transform)을 조회
-            # transform = self.tf_buffer.lookup_transform(
-            #     self.target_frame,
-            #     self.source_frame,
-            #     rclpy.time.Time() # 가장 최신의 TF 사용
-            # # )
-            
-            # # 조회한 TF를 4x4 동차 변환 행렬(NumPy)로 변환
-            # extrinsic_matrix = self.transform_to_matrix(transform)
-            # TODO: reduce computation .
-            # this is default computation. because camera and robot base link is constant TF
+            transform = self.tf_buffer.lookup_transform(
+                self.target_frame,
+                self.source_frame,
+                rclpy.time.Time() # 가장 최신의 TF 사용
+            )
+            # 조회한 TF를 4x4 동차 변환 행렬(NumPy)로 변환
+            transform_matrix = self.transform_to_matrix(transform)
             
             # 4. 변환 적용 (GPU)
-            # 카메라 좌표계의 3D 포인트들을 로봇('body') 좌표계로 변환 : Homogeneous Matrix Transformation 
-            transformed_cloud = self.apply_transform_gpu(point_cloud, self.extrinsic_matrix )
+            # 카메라 좌표계의 3D 포인트들을 로봇('body') 좌표계로 변환
+            transformed_cloud = self.apply_transform_gpu(point_cloud, transform_matrix)
             
             # 5. 다운샘플링 및 색상 적용 (GPU -> CPU)
             # 처리 속도 향상과 데이터 크기 감소를 위해 다운샘플링
@@ -208,22 +172,13 @@ class PointCloudReconstructionNode(Node):
         
         # x = (u - cx) * z / fx
         # y = (v - cy) * z / fy
-        # 모든 계산은 GPU에서 병렬로 수행됨 # pytorch Broadcasting 
+        # 모든 계산은 GPU에서 병렬로 수행됨
         x = (self.u_grid - self.cx_tensor) * z / self.fx_tensor
         y = (self.v_grid - self.cy_tensor) * z / self.fy_tensor
-        # z.shape : 480,848 
-        # TODO: what is shape of this calculation and why correct? 
-        # this is complex matrix divide and multicasting
-        
-        
-        # TODO: torch.stack 
-        # what is shape of x,y,z? 
-        # how to stack this? 
-        # x,y,z.shape = Tensor(H,W)
         
         # 3. (x, y, z) 텐서를 마지막 차원을 기준으로 스택
         # 결과: (Height, Width, 3) 형태의 3D 포인트 클라우드 텐서
-        pointcloud = torch.stack([x, y, z], dim=-1) # shape Tensor(H,w,3)
+        pointcloud = torch.stack([x, y, z], dim=-1)
         
         return pointcloud
 
@@ -246,23 +201,15 @@ class PointCloudReconstructionNode(Node):
         # 3. 행렬 곱셈으로 변환 적용
         # (N, 4) @ (4, 4)^T = (N, 4)
         # PyTorch의 torch.mm은 (A @ B.T)가 A @ B 보다 효율적일 수 있음
-        # TODO : why efficient? 
-        # Memory Locality 
-        
-        
         # 여기서는 matrix_tensor.T (전치행렬)와 곱함
         transformed = torch.mm(homogeneous, matrix_tensor.T)
         
         # 4. (N, 4) -> (N, 3)으로 변환 (동차 좌표의 w 성분 제거)
         # 5. (N, 3) -> (H, W, 3) 원본 형태로 복원
-        
-        # Projection 
         return transformed[:, :3].reshape(original_shape)
 
     def process_pointcloud_gpu(self, pointcloud):
         """GPU를 이용한 다운샘플링 및 색상 적용"""
-        
-        # TODO: how about processing depth size reduce before downsampling? is this much efficient? 
         
         # 1. 다운샘플링 (GPU)
         # (H, W, 3) 텐서를 슬라이싱하여 다운샘플링
@@ -290,8 +237,6 @@ class PointCloudReconstructionNode(Node):
         
         return points_np, colors
 
-    
-    # Extrinsic Matrix : Default 
     def transform_to_matrix(self, transform):
         """ROS Transform 메시지를 4x4 동차 변환 행렬(NumPy)로 변환"""
         
@@ -314,7 +259,6 @@ class PointCloudReconstructionNode(Node):
         
         return matrix
 
-    # 
     def create_pointcloud_msg(self, points, colors, frame_id):
         """NumPy 배열을 ROS PointCloud2 메시지로 변환"""
         

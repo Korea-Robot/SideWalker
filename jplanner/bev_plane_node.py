@@ -31,8 +31,10 @@ class SemanticBEVNode(Node):
         self.declare_parameter('grid_resolution', 0.1) # meters per cell
         self.declare_parameter('grid_size_x', 30.0)    # total width in meters
         self.declare_parameter('grid_size_y', 30.0)    # total height in meters
-        self.declare_parameter('input_topic', '/semantic_pointcloud') # --- NOTE: Input topic name is kept
-        self.declare_parameter('output_topic', '/semantic_bev_map')
+        # self.declare_parameter('input_topic', '/semantic_pointcloud') # --- NOTE: Input topic name is kept
+        self.declare_parameter('input_topic', '/pointcloud') # --- NOTE: Input topic name is kept
+        # self.declare_parameter('output_topic', '/semantic_bev_map')
+        self.declare_parameter('output_topic', '/bev_map')
         
         # Get parameters
         self.z_min = self.get_parameter('z_min').get_parameter_value().double_value
