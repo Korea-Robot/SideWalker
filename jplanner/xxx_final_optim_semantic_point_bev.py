@@ -459,15 +459,12 @@ class SemanticPointCloudBEVNode(Node):
         ]
         self.point_step_pcl = 20 # 4*4 + 4 = 20 bytes
 
-        # 5.2. Semantic BEV Map 필드 (x,y,z,rgb) - (z=height, rgb=label color)
-        self.semantic_bev_fields = [
-            PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
-            PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
-            PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
-            PointField(name='rgb', offset=12, datatype=PointField.FLOAT32, count=1),
-            # PointField(name='label', offset=16, datatype=PointField.UINT32, count=1),#semantic bev label
-        ]
-        self.point_step_bev = 16 # 4*4 = 16 bytes
+        # 5.2. Semantic BEV Map 필드 (x,y,z,rgb,label)
+        # --- ⬇️ 수정된 부분 ⬇️ ---
+        # PCL과 동일한 20바이트 필드를 사용
+        self.semantic_bev_fields = self.semantic_pointcloud_fields
+        self.point_step_bev = self.point_step_pcl
+        # --- ⬆️ 수정된 부분 ⬆️ ---
 
         # --- 6. GPU 파라미터 초기화 ---
         self._init_gpu_parameters()
@@ -487,7 +484,7 @@ class SemanticPointCloudBEVNode(Node):
 
         self.get_logger().info('✅ Semantic PointCloud + BEV Node initialized (GPU Only)')
         self.get_logger().info(f"  PCL Topic: {semantic_pointcloud_topic}")
-        self.get_logger().info(f"  BEV Topic: {semantic_bev_topic}")
+        self.get_logger().info(f"  BEV Topic: {semantic_bev_topic} (Label 필드 포함)")
         self.get_logger().info(f"  BEV Grid: {self.cells_x}x{self.cells_y} cells @ {self.resolution} m")
 
     def _init_gpu_parameters(self):
@@ -761,7 +758,7 @@ class SemanticPointCloudBEVNode(Node):
     ):
         """
         'transformed_cloud' (H, W, 3)와 'mask_aligned' (H, W) GPU 텐서를 사용하여
-        GPU에서 Semantic BEV 맵을 생성하고 발행합니다.
+        GPU에서 Semantic BEV 맵을 생성하고 발행합니다. (Label 필드 포함)
         """
 
         # 1. Flatten (GPU)
@@ -774,9 +771,6 @@ class SemanticPointCloudBEVNode(Node):
         mask = (z_flat > self.z_min_t) & (z_flat < self.z_max_t)
 
         # 3. 시맨틱 필터 마스크 (GPU) - "is_not_in"
-        # (N,) 텐서의 각 요소가 (M,) 텐서에 있는지 확인
-        # (labels_flat.unsqueeze(1) == self.bev_ignore_labels_t).any(dim=1)
-        # 위 방식은 매우 느림. 더 빠른 방식:
         ignore_mask = torch.zeros_like(labels_flat, dtype=torch.bool)
         for label in self.bev_ignore_labels: # CPU-GPU sync, 하지만 라벨 수가 적으면 빠름
              ignore_mask |= (labels_flat == label)
@@ -805,19 +799,11 @@ class SemanticPointCloudBEVNode(Node):
 
         # 8. 데이터 패킹 (GPU)
         # Z (밀리미터, 32비트 정수) + Label (16비트 정수)
-        # (Z*1000)을 16비트 왼쪽 시프트, Label을 OR 연산
         z_shifted = (valid_z * 1000.0).long() << 16
         packed_data = z_shifted | valid_labels 
-        # (Label이 65535를 넘지 않는다고 가정)
-
+        
         # 9. "Highest Point Wins" (GPU Scatter-Max)
-        # 9.1. 재사용하는 맵 텐서를 0으로 초기화
         self.bev_packed_flat.fill_(0)
-
-        # 9.2. scatter_reduce (amax)
-        # packed_data (Z와 Label이 패킹됨) 중 가장 큰 값을
-        # bev_packed_flat의 해당 인덱스에 저장합니다.
-        # Z가 상위 비트에 있으므로, 이 연산은 Z-max를 찾는 것과 같습니다.
         self.bev_packed_flat.index_reduce_(
             dim=0,
             index=linear_indices,
@@ -827,19 +813,15 @@ class SemanticPointCloudBEVNode(Node):
         )
 
         # 10. 유효한 셀만 추출 (GPU)
-        # 0이 아닌 (즉, 포인트가 하나라도 할당된) 셀만 찾기
         valid_bev_mask = self.bev_packed_flat > 0
-
         valid_indices_flat = torch.where(valid_bev_mask)[0]
         if valid_indices_flat.shape[0] == 0:
             return
-
         packed_values = self.bev_packed_flat[valid_bev_mask]
 
         # 11. 데이터 언패킹 (GPU)
         height_values_mm = packed_values >> 16
-        label_values = (packed_values & 0xFFFF).long() # 16비트 마스크 (65535)
-        
+        label_values = (packed_values & 0xFFFF).long() # 16비트 마스크
         height_values = height_values_mm.float() / 1000.0
 
         # 12. 1D 인덱스 -> 2D 인덱스 -> 월드 좌표 (GPU)
@@ -853,22 +835,29 @@ class SemanticPointCloudBEVNode(Node):
         # 13. 라벨 -> RGB 색상 변환 (GPU)
         rgb_float32_gpu = self._label_to_color_gpu(label_values)
 
-        # 13.5 label -> float32 (gpu)
-        #
+        # --- ⬇️ 수정된 부분 ⬇️ ---
+        # 13.5. 라벨 -> Float32 변환 (GPU)
+        labels_float32_gpu = label_values.long().to(torch.uint32).view(torch.float32)
+        # --- ⬆️ 수정된 부분 ⬆️ ---
 
-        # 14. (X, Y, Z, RGB) 데이터 결합 (GPU)
+        # --- ⬇️ 수정된 부분 ⬇️ ---
+        # 14. (X, Y, Z, RGB, Label) 데이터 결합 (GPU)
         bev_data_gpu = torch.stack(
-            [x_world, y_world, z_world, rgb_float32_gpu],
-            dim=-1 # (N, 4)
+            [x_world, y_world, z_world, rgb_float32_gpu, labels_float32_gpu],
+            dim=-1 # (N, 5)
         )
+        # --- ⬆️ 수정된 부분 ⬆️ ---
 
         # 15. GPU -> CPU 전송
         bev_data_np = bev_data_gpu.cpu().numpy()
 
+        # --- ⬇️ 수정된 부분 ⬇️ ---
         # 16. PointCloud2 메시지 생성 (CPU)
-        bev_msg = self._create_bev_cloud_from_data(
+        # (PCL과 동일한 함수, 동일한 20바이트 포맷 사용)
+        bev_msg = self._create_semantic_cloud_from_data(
             bev_data_np, stamp, self.target_frame
         )
+        # --- ⬆️ 수정된 부분 ⬆️ ---
 
         # 17. 발행
         self.sem_bev_pub.publish(bev_msg)
@@ -894,41 +883,36 @@ class SemanticPointCloudBEVNode(Node):
         """
         (N, 5) [x, y, z, rgb_float32, label_float32] NumPy 배열로
         Semantic PointCloud2 메시지를 생성합니다.
+        (PCL과 BEV 공통으로 사용)
         """
         header = Header(stamp=stamp, frame_id=frame_id)
         num_points = data_np.shape[0]
+        
+        # PCL용인지 BEV용인지에 따라 필드와 스텝을 선택
+        if data_np.shape[1] == 5: # [x,y,z,rgb,label]
+            fields = self.semantic_pointcloud_fields
+            point_step = self.point_step_pcl
+        else:
+            # (이 코드는 항상 5개 필드를 전달하지만, 예외 처리)
+            self.get_logger().error("잘못된 데이터 형식 수신")
+            return None
 
         return PointCloud2(
             header=header,
             height=1,
             width=num_points,
-            fields=self.semantic_pointcloud_fields,
+            fields=fields,
             is_bigendian=False,
-            point_step=self.point_step_pcl, # 20
-            row_step=self.point_step_pcl * num_points,
+            point_step=point_step,
+            row_step=point_step * num_points,
             data=data_np.astype(np.float32).tobytes(),
             is_dense=True,
         )
 
-    def _create_bev_cloud_from_data(self, point_data_np, stamp, frame_id):
-        """
-        (N, 4) [x, y, z, rgb_float32] NumPy 배열로
-        BEV PointCloud2 메시지를 생성합니다.
-        """
-        header = Header(stamp=stamp, frame_id=frame_id)
-        num_points = point_data_np.shape[0]
-
-        return PointCloud2(
-            header=header,
-            height=1,
-            width=num_points,
-            fields=self.semantic_bev_fields,
-            is_bigendian=False,
-            point_step=self.point_step_bev, # 16
-            row_step=self.point_step_bev * num_points,
-            data=point_data_np.astype(np.float32).tobytes(),
-            is_dense=True,
-        )
+    # --- ⬇️ 수정된 부분 ⬇️ ---
+    # _create_bev_cloud_from_data 함수 삭제됨
+    # (PCL/BEV 모두 _create_semantic_cloud_from_data 사용)
+    # --- ⬆️ 수정된 부분 ⬆️ ---
 
     def _report_stats(self):
         """성능 통계 출력"""

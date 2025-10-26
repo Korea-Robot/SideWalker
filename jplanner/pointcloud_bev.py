@@ -1,6 +1,3 @@
-
-
-
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
@@ -36,10 +33,12 @@ class PointCloudBEVNode(Node):
         self.declare_parameter('target_frame', 'camera_link') # TF 변환 최종 좌표계
 
         # 카메라 내부 파라미터 (Intel RealSense D435 848x480 기준)
+        # Intrinsic 
         self.declare_parameter('cam.fx', 431.0625)
         self.declare_parameter('cam.fy', 431.0625)
         self.declare_parameter('cam.cx', 434.492)
         self.declare_parameter('cam.cy', 242.764)
+        # Resolution
         self.declare_parameter('cam.height', 480)
         self.declare_parameter('cam.width', 848)
 
@@ -49,7 +48,7 @@ class PointCloudBEVNode(Node):
 
         # BEV 파라미터
         self.declare_parameter('bev_topic', '/bev_map')
-        self.declare_parameter('bev.z_min', 0.15)       # BEV 높이 필터 최소값
+        self.declare_parameter('bev.z_min', -0.15)       # BEV 높이 필터 최소값
         self.declare_parameter('bev.z_max', 1.0)        # BEV 높이 필터 최대값
         self.declare_parameter('bev.resolution', 0.1)   # BEV 그리드 해상도 (m/cell)
         self.declare_parameter('bev.size_x', 30.0)      # BEV 맵 전체 X 크기 (m)
