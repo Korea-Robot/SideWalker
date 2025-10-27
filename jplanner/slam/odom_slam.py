@@ -13,7 +13,9 @@ import struct # RGB 패킹을 위해
 
 class PointCloudBEVNode(Node):
     """
-    Depth 이미지를 3D Point Cloud와 BEV Map으로 변환하고 발행하는 노드.
+    [SLAM 수정]
+    Depth 이미지를 3D Point Cloud와 **'누적된'** BEV Map으로 변환하고 발행하는 노드.
+    ROS TF ('odom' 프레임)를 사용하여 맵을 누적합니다.
     모든 주요 연산은 PyTorch CUDA GPU 가속을 사용합니다.
     """
 
@@ -27,19 +29,17 @@ class PointCloudBEVNode(Node):
 
         # --- 2. ROS 파라미터 선언 (PCL + BEV) ---
         # Point Cloud 파라미터
-        # rclpy Node default function : declare_parameter, get_parameter 
         self.declare_parameter('depth_topic', '/camera/camera/depth/image_rect_raw')
         self.declare_parameter('pointcloud_topic', '/pointcloud')
         self.declare_parameter('source_frame', 'camera_depth_optical_frame')
-        self.declare_parameter('target_frame', 'camera_link') # TF 변환 최종 좌표계
+        # [SLAM 수정] target_frame의 기본값을 'odom'으로 변경
+        self.declare_parameter('target_frame', 'map') # TF 변환 최종 좌표계 (맵 누적 기준)
 
         # 카메라 내부 파라미터 (Intel RealSense D435 848x480 기준)
-        # Intrinsic 
         self.declare_parameter('cam.fx', 431.0625)
         self.declare_parameter('cam.fy', 431.0625)
         self.declare_parameter('cam.cx', 434.492)
         self.declare_parameter('cam.cy', 242.764)
-        # Resolution
         self.declare_parameter('cam.height', 480)
         self.declare_parameter('cam.width', 848)
 
@@ -49,9 +49,9 @@ class PointCloudBEVNode(Node):
 
         # BEV 파라미터
         self.declare_parameter('bev_topic', '/bev_map')
-        self.declare_parameter('bev.z_min', 0.15)       # BEV 높이 필터 최소값
+        self.declare_parameter('bev.z_min', -0.25)      # BEV 높이 필터 최소값
         self.declare_parameter('bev.z_max', 1.0)        # BEV 높이 필터 최대값
-        self.declare_parameter('bev.resolution', 0.05)   # BEV 그리드 해상도 (m/cell)
+        self.declare_parameter('bev.resolution', 0.05)  # BEV 그리드 해상도 (m/cell)
         self.declare_parameter('bev.size_x', 30.0)      # BEV 맵 전체 X 크기 (m)
         self.declare_parameter('bev.size_y', 30.0)      # BEV 맵 전체 Y 크기 (m)
 
@@ -60,7 +60,7 @@ class PointCloudBEVNode(Node):
         depth_topic = self.get_parameter('depth_topic').value
         pointcloud_topic = self.get_parameter('pointcloud_topic').value
         self.source_frame = self.get_parameter('source_frame').value
-        self.target_frame = self.get_parameter('target_frame').value
+        self.target_frame = self.get_parameter('target_frame').value # 'odom'이 됨
 
         self.fx = self.get_parameter('cam.fx').value
         self.fy = self.get_parameter('cam.fy').value
@@ -81,18 +81,16 @@ class PointCloudBEVNode(Node):
         self.size_y = self.get_parameter('bev.size_y').value
 
         # BEV 그리드 설정
-        # Continuous real coordiantes => Discrete Grid index 
         self.cells_x = int(self.size_x / self.resolution)
         self.cells_y = int(self.size_y / self.resolution)
-        # start index  of bev map
         self.grid_origin_x = -self.size_x / 2.0
         self.grid_origin_y = -self.size_y / 2.0
 
         # --- 4. ROS 통신 설정 ---
         qos_profile = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE, # BestEFFORT : what is difference?
+            reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
-            depth=1 #latest information is most important 
+            depth=1
         )
 
         # 구독자 (Depth Image)
@@ -104,13 +102,9 @@ class PointCloudBEVNode(Node):
         self.pointcloud_pub = self.create_publisher(PointCloud2, pointcloud_topic, qos_profile)
         self.bev_pub = self.create_publisher(PointCloud2, bev_topic, qos_profile)
 
-        # TF 리스너
-        """
-        # TODO : Tf info manager
-        # base_link, camera_link, ... many frame exist, so TF system broadcast relative pose & orientation
+        # [SLAM 수정] TF 리스너 활성화
         self.tf_buffer = Buffer() # Database 
         self.tf_listener = TransformListener(self.tf_buffer, self) # all tf information save & manage 
-        """
 
 
         # --- 5. Point Cloud 필드 정의 (PCL과 BEV 공통) ---
@@ -127,24 +121,18 @@ class PointCloudBEVNode(Node):
 
         self.get_logger().info('✅ PointCloud + BEV Node initialized (GPU Only)')
         self.get_logger().info(f"  PCL Topic: {pointcloud_topic}")
-        self.get_logger().info(f"  BEV Topic: {bev_topic}")
+        self.get_logger().info(f"  BEV Topic: {bev_topic} (누적 모드, Target: {self.target_frame})")
         self.get_logger().info(f"  BEV Grid: {self.cells_x}x{self.cells_y} cells @ {self.resolution} m")
 
     def _init_gpu_parameters(self):
         """GPU에서 사용할 파라미터 미리 생성 (콜백 함수 내 부하 감소)"""
 
         # 1. PCL 재구성을 위한 픽셀 그리드 (카메라 좌표계) 
-        # TODO : 3D Reconstruction pixel grid 
         v, u = torch.meshgrid(
             torch.arange(self.cam_height, device=self.device, dtype=torch.float32),
             torch.arange(self.cam_width, device=self.device, dtype=torch.float32),
             indexing='ij' # indexing 'ij' option is very very important 
-            # i : row    : 
-            # j : column : 
         )
-        # TODO :  for loop NEVER use
-        # Vectorized Operation 
-
 
         self.u_grid = u # x axis
         self.v_grid = v # y axis 
@@ -170,14 +158,8 @@ class PointCloudBEVNode(Node):
             dtype=torch.float32
         )
 
-        # robot frame  : x forward, z upward
-        # camera frame : z forward, x ??
-        self.transform_matrix = np.array([
-            [0.,0.,1.,0.0],
-            [-1.,0.,0.,0.],
-            [0.,-1.,0.,0.],
-            [0.,0.,0.,1.]
-        ],dtype=np.float32)
+        # [SLAM 수정] 하드코딩된 변환 행렬 삭제. 동적 TF를 사용할 것이므로 필요 없음.
+        # self.transform_matrix = np.array(...) 
 
         self.get_logger().info(f'GPU 파라미터 초기화 완료 ({self.cam_height}x{self.cam_width})')
 
@@ -188,38 +170,35 @@ class PointCloudBEVNode(Node):
             depth_image = self.bridge.imgmsg_to_cv2(
                 msg, desired_encoding=msg.encoding
             ).astype(np.float32) / 1000.0
-            # shape 480,848
             
             # --- 2. NumPy -> GPU 텐서 ---
             depth_tensor = torch.from_numpy(depth_image).to(self.device)
-            # 
-
+            
             # --- 3. 3D 재구성 (GPU) ---
             # (H, W, 3) 형태의 카메라 좌표계 포인트 클라우드
             pointcloud_cam = self.depth_to_pointcloud_gpu(depth_tensor)
-            # 480,848,3 pointcloud
-
 
             # --- 4. TF 조회 (CPU) ---
-            """
-            # transform from source_frame to target_frame 
-            # calculate transformation matrix at time.
-            transform = self.tf_buffer.lookup_transform(
-                self.target_frame, self.source_frame, rclpy.time.Time()
-            )
-            transform_matrix = self.transform_to_matrix(transform) # class numpy.ndarray (4,4)
-
-            # self.get_logger().info(f"transform matrix : {transform_matrix.shape}")
-            """
+            # [SLAM 수정] TF 조회 블록 활성화
+            try:
+                # 'target_frame'('odom') -> 'source_frame'('camera_depth_optical_frame')
+                # rclpy.time.Time()는 '최신' TF를 조회합니다.
+                transform = self.tf_buffer.lookup_transform(
+                    self.target_frame, self.source_frame, rclpy.time.Time()
+                )
+                transform_matrix = self.transform_to_matrix(transform) # class numpy.ndarray (4,4)
+            
+            except TransformException as e:
+                self.get_logger().warn(f'TF 변환 실패 ({self.target_frame} -> {self.source_frame}): {e}', throttle_duration_sec=1.0)
+                return # TF가 없으면 이 프레임 처리 중단
 
             # --- 5. 좌표 변환 (GPU) ---
             # (H, W, 3) 형태의 로봇('target_frame') 좌표계 포인트 클라우드
-            transformed_cloud = self.apply_transform_gpu(pointcloud_cam, self.transform_matrix) # transform_matrix)  
+            # [SLAM 수정] self.transform_matrix 대신 조회한 transform_matrix 사용
+            transformed_cloud = self.apply_transform_gpu(pointcloud_cam, transform_matrix) 
 
             # --- 6. 메시지 발행 (PCL, BEV) ---
-            stamp = msg.header.stamp # self.get_clock().now().to_msg()
-            # raw depth image time stampe copy
-            # syncronize depth image topic and transformed PCL/ BEV 
+            stamp = msg.header.stamp 
 
             # Fork 1: 3D 포인트 클라우드 처리 및 발행
             self.process_and_publish_pointcloud(transformed_cloud, stamp)
@@ -227,8 +206,6 @@ class PointCloudBEVNode(Node):
             # Fork 2: BEV 맵 처리 및 발행
             self.process_and_publish_bev(transformed_cloud, stamp)
 
-        except TransformException as e:
-            self.get_logger().warn(f'TF 변환 실패: {e}', throttle_duration_sec=1.0)
         except Exception as e:
             self.get_logger().error(f'Point Cloud/BEV 처리 오류: {e}')
     
@@ -239,10 +216,7 @@ class PointCloudBEVNode(Node):
         z = depth_tensor # we get depth
         x = (self.u_grid - self.cx_tensor) * z / self.fx_tensor 
         y = (self.v_grid - self.cy_tensor) * z / self.fy_tensor
-        # broadcasting operation : self.u_grid - self.cx_tensor 
-        # elementwize product    : * z 
-        # broadcasting operation : / self.fx_tensor
-
+        
         # (H, W, 3) 형태로 스택
         return torch.stack([x, y, z], dim=-1)
 
@@ -262,7 +236,6 @@ class PointCloudBEVNode(Node):
         transformed = torch.mm(homogeneous, matrix_tensor.T)
 
         # (N, 3) -> (H, W, 3)
-        # projection 
         return transformed[:, :3].reshape(original_shape)
 
     def process_and_publish_pointcloud(self, transformed_cloud, stamp):
@@ -275,7 +248,6 @@ class PointCloudBEVNode(Node):
         points = sampled.reshape(-1, 3)
 
         # 3. 유효한 포인트 필터링 (Z > 0)
-        # 변환 후 z=0 (혹은 음수)가 된 포인트 제거
         valid_mask = points[:, 2] > 0.01 # Z > 1cm
         points = points[valid_mask]
 
@@ -296,8 +268,7 @@ class PointCloudBEVNode(Node):
         pointcloud_msg = self.create_pointcloud_msg(
             points_np, colors, stamp, self.target_frame
         )
-        # type pointcloud2
-
+        
         # 7. pointcloud publish 발행
         self.pointcloud_pub.publish(pointcloud_msg)
 
@@ -305,32 +276,25 @@ class PointCloudBEVNode(Node):
     def process_and_publish_bev(self, transformed_cloud, stamp):
         """
         'transformed_cloud' (H, W, 3) GPU 텐서를 사용하여
-        GPU에서 BEV 맵을 생성하고 발행합니다.
+        GPU에서 BEV 맵을 생성하고 발행합니다. (누적 모드)
         """
 
         # 1. flatten pointcloud 
-        # 1. (H, W, 3) -> (N, 3) -> (x_flat, y_flat, z_flat)
-        # .ravel()은 1D 뷰를 생성 (복사 없음)
+        # (H, W, 3) -> (N, 3) -> (x_flat, y_flat, z_flat)
         x_flat = transformed_cloud[..., 0].ravel()
         y_flat = transformed_cloud[..., 1].ravel()
         z_flat = transformed_cloud[..., 2].ravel()
 
-
         # 2. Z-필터 마스크 (GPU)
-        # Z height filter masking
         mask = (z_flat > self.z_min_t) & (z_flat < self.z_max_t)
 
         # 3. 월드 좌표 -> 그리드 인덱스 변환 (GPU)
-        # .long() == .to(torch.int64) 
-        # (x,y) => (r,c) : row, column index coordinates
         grid_c = ((x_flat - self.grid_origin_x_t) / self.resolution_t).long()
         grid_r = ((y_flat - self.grid_origin_y_t) / self.resolution_t).long()
 
         # 4. 바운더리 체크 마스크 (GPU)
-        # index >0 and < boundary size
         mask &= (grid_c >= 0) & (grid_c < self.cells_x) & \
                 (grid_r >= 0) & (grid_r < self.cells_y)
-        # mask &= 1,2 mask AND 
 
         # 5. 유효한 포인트만 필터링 (GPU)
         valid_z = z_flat[mask]
@@ -341,29 +305,28 @@ class PointCloudBEVNode(Node):
         valid_c = grid_c[mask]
 
         # 6. 2D 인덱스 -> 1D 선형 인덱스 (GPU)
-        # (r, c) -> r * num_cols + c
         linear_indices = valid_r * self.cells_x + valid_c
 
         # 7. "Highest Point Wins" (GPU Scatter-Max)
-        # 7.1. 재사용하는 높이 맵 텐서를 -inf로 초기화
-        self.bev_heights_flat.fill_(-torch.inf)
+        
+        # 7.1. [SLAM 수정] 맵을 누적하므로, -inf로 초기화하는 코드를 주석 처리합니다.
+        # self.bev_heights_flat.fill_(-torch.inf)
 
-        # 7.2. scatter_reduce_ (PyTorch 1.12+) 또는 index_reduce_
-        # 동일한 'linear_indices'를 가진 'valid_z' 값들 중 최대값(amax)을
-        # 'bev_heights_flat'의 해당 인덱스에 저장합니다.
+        # 7.2. index_reduce_
+        # 'bev_heights_flat'의 'linear_indices' 위치에
+        # 'valid_z' 값들을 'amax'(최대값) 연산으로 적용합니다.
         self.bev_heights_flat.index_reduce_(
             dim=0,
             index=linear_indices,
             source=valid_z, 
             reduce="amax",
-            include_self=False # fill_(-inf) 했으므로 기존 값 무시
+            # [SLAM 수정] True로 변경하여 '기존 맵의 값'과 '새로운 값' 중 최대값을 선택합니다.
+            include_self=True 
         )
-        # valid index cell 1D 
 
         # 8. 유효한 셀만 추출 (GPU)
         # -inf가 아닌, 즉 포인트가 하나라도 할당된 셀만 찾기
         valid_bev_mask = self.bev_heights_flat > -torch.inf
-
 
         # 유효한 셀의 1D 인덱스
         valid_indices_flat = torch.where(valid_bev_mask)[0]
@@ -377,7 +340,6 @@ class PointCloudBEVNode(Node):
         r_idx_bev = torch.div(valid_indices_flat, self.cells_x, rounding_mode='floor')
         c_idx_bev = valid_indices_flat % self.cells_x
         
-
         # 10. BEV 포인트의 월드 좌표 계산 (GPU)
         # 각 셀의 중앙 좌표
         x_world = self.grid_origin_x_t + (c_idx_bev.float() + 0.5) * self.resolution_t
@@ -388,7 +350,6 @@ class PointCloudBEVNode(Node):
         rgb_float32_gpu = self._height_to_color_gpu(height_values)
 
         # 12. (X, Y, Z, RGB) 데이터 결합 (GPU)
-        # .unsqueeze(1) : (N,) -> (N, 1)
         bev_data_gpu = torch.stack(
             [x_world, y_world, z_world, rgb_float32_gpu],
             dim=-1 # (N, 4)
@@ -413,7 +374,6 @@ class PointCloudBEVNode(Node):
             """
             # 정규화 [0, 1] -> [0, 4]
             z_norm = (z - self.z_min_t) / self.z_range_t
-            # z_norm = (self.z_max_t - self.z_min_t) / self.z_range_t
             z_norm = torch.clamp(z_norm, 0.0, 1.0) * 4.0
 
             # float 텐서로 초기화
@@ -443,24 +403,20 @@ class PointCloudBEVNode(Node):
             g[mask] = 4.0 - z_norm[mask]
 
             # [0, 1] float -> [0, 255]
-            # .long() (int64)으로 변환하여 곱셈/덧셈 준비
             r_val = (r * 255).long()
             g_val = (g * 255).long()
             b_val = (b * 255).long()
 
             # --- FIX ---
             # Bitwise shift (<<) 대신 곱셈 사용
-            # (r_uint << 16) | (g_uint << 8) | b_uint  <- 이 연산이 CUDA에서 uint32로 지원 안 됨
             rgb_packed_gpu = (r_val * 65536) + (g_val * 256) + b_val
 
-            # packed int64 -> uint32로 캐스팅 (데이터 손실 없음, 24비트만 사용하므로)
+            # packed int64 -> uint32로 캐스팅
             rgb_uint32_gpu = rgb_packed_gpu.to(torch.uint32)
             # --- END FIX ---
 
             # .view(torch.float32) : uint32 -> float32 비트 재해석
             return rgb_uint32_gpu.view(torch.float32)
-
-
 
     def transform_to_matrix(self, transform):
         """ROS Transform 메시지를 4x4 동차 변환 행렬(NumPy)로 변환"""
@@ -481,18 +437,14 @@ class PointCloudBEVNode(Node):
         (N, 3) points와 (N, 3) uint8 colors NumPy 배열로
         PointCloud2 메시지를 생성합니다. (PCL용)
         """
-        # frame_id = target_frame 
         header = Header(stamp=stamp, frame_id=frame_id)
 
         # 1. RGB 색상 패킹 (CPU)
-        # (R, G, B) 3바이트 -> 4바이트 uint32 -> 4바이트 float32
         rgb_uint32 = (
             (colors_np[:, 0].astype(np.uint32) << 16) |
             (colors_np[:, 1].astype(np.uint32) << 8) |
             (colors_np[:, 2].astype(np.uint32))
         )
-        # points_np same dimension
-
         rgb_float32 = rgb_uint32.view(np.float32)
 
         # 2. (N, 3) XYZ와 (N, 1) RGB(float32) 결합
@@ -500,24 +452,19 @@ class PointCloudBEVNode(Node):
             points_np.astype(np.float32),
             rgb_float32.reshape(-1, 1)
         ])
-        # N,4
 
         # 3. 메시지 생성
         num_points = pointcloud_data.shape[0]
         return PointCloud2(
-            header=header, # when , where data 
-            height=1,      # 
-            width=num_points, # unorganized points 
-            fields=self.pointcloud_fields, # meta data # pointField object list  
-            # PointField :  name : x,y,z ,rgb, intensity 
-            # offset   : z 8byte 
-            # datatype : float32 4byte 
-             
-            is_bigendian=False, # byte save orders  almost false intel, amd, arm
-            point_step=self.point_step, # 16 # one point : total memory : 16byte 
-            row_step=self.point_step * num_points, # row all point byte 
-            data=pointcloud_data.tobytes(), # binary blob (binary large object) # giant byte array
-            is_dense=True, # is_dense data validation , not number or inf value 
+            header=header,
+            height=1,
+            width=num_points,
+            fields=self.pointcloud_fields,
+            is_bigendian=False,
+            point_step=self.point_step, 
+            row_step=self.point_step * num_points, 
+            data=pointcloud_data.tobytes(),
+            is_dense=True,
         )
 
     def _create_cloud_from_data(self, point_data_np, stamp, frame_id):

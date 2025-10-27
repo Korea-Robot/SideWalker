@@ -48,10 +48,10 @@ from collections import deque
 
 # from semantic_reconstruction_config import ReconstructionConfig
 # from optimized_config import ReconstructionConfig
-from last_config import ReconstructionConfig
+from semantic_pointcloud_config import ReconstructionConfig
 
 # from semantic_reconstruction_model  import SemanticModel
-from optimized_model import SemanticModel
+from semantic_pointcloud_model import SemanticModel
 
 class ReconstructionNode(Node):
     """

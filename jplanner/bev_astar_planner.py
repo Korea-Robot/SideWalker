@@ -94,7 +94,14 @@ class AStarBevPlanner(Node):
         d3 = (2.433, 2.274)
         d4 = (-0.223, 2.4)
         d5 = (-2.55, 5.0)
-        self.waypoints = [d1, d2, d3, d1, d4, d5]
+
+        d1 = (-0.3,1.88)
+        d2 = (5.58,19.915)
+        d3 = (2.606,36.25)
+        d4 = (-9.88,38.336)
+        d5 = (-21.88,29.57)
+        
+        self.waypoints = [d1, d2, d3, d1, d4, d5,d1]
         self.waypoint_index = 0
         self.goal_threshold = 0.6
 

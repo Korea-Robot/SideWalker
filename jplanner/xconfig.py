@@ -64,10 +64,34 @@ class ReconstructionConfig:
     # --- 모델 설정 ---
     use_semantic: bool = True
     model_type: str ="maskformer-cityscapes" # "custom-object", "custom-surface", "segformer-cityscapes", "maskformer-cityscapes"
-    custom_object_model_path: str = "best_object_model.pth"
-    custom_surface_model_path: str = "best_surface_model.pth"
+    # model_type: str ="segformer-cityscapes"
+    # model_type: str ="custom-object"
+    # model_type: str ="custom-surface"
+    custom_object_model_path: str = "models/dynamic_object/best_model2.pth.pth"
+    custom_surface_model_path: str = "models/surface/surface_mask_best_lrup.pt.pth"
     segformer_checkpoint: str = "nvidia/segformer-b0-finetuned-cityscapes-1024-1024"
     maskformer_checkpoint: str = "facebook/mask2former-swin-tiny-cityscapes-semantic"
+
+
+    # --- Pre-trained Model Checkpoints (필요시 수정) ---
+    # segformer_checkpoint: str = "nvidia/segformer-b0-finetuned-ade-512-512"
+    
+    segformer_checkpoint: str = "nvidia/segformer-b0-finetuned-cityscapes-512-1024"   # good 
+
+    # segformer_checkpoint: str = "nvidia/segformer-b4-finetuned-cityscapes-1024-1024"
+    # segformer_checkpoint: str = "nvidia/segformer-b3-finetuned-cityscapes-1024-1024"
+    # segformer_checkpoint: str = "nvidia/segformer-b2-finetuned-cityscapes-1024-1024" 
+    # segformer_checkpoint: str = "nvidia/segformer-b1-finetuned-cityscapes-1024-1024" # bad 
+    segformer_checkpoint: str = "nvidia/segformer-b0-finetuned-cityscapes-1024-1024" # good
+
+    # maskformer_checkpoint: str = "facebook/mask2former-swin-base-coco"
+    # maskformer_checkpoint: str = "facebook/mask2former-swin-tiny-coco"
+    # maskformer_checkpoint: str = "facebook/mask2former-swin-tiny-cityscapes-panoptic"
+    maskformer_checkpoint: str = "facebook/mask2former-swin-tiny-cityscapes-semantic" # best
+    # maskformer_checkpoint: str = "facebook/mask2former-swin-small-cityscapes-semantic"
+    # maskformer_checkpoint: str = "facebook/mask2former-swin-large-cityscapes-semantic"
+    # maskformer_checkpoint: str = "facebook/mask2former-swin-tiny-coco-panoptic"
+
     
     # --- 카메라 및 토픽 설정 ---
     depth_topic: str = '/camera/camera/depth/image_rect_raw'
@@ -111,7 +135,8 @@ class ReconstructionConfig:
         elif self.model_type == "segformer-cityscapes":
             self.active_model_name = self.segformer_checkpoint
             self.custom_class_names = CITYSCAPES_CLASSES.copy()
-            self.inference_size = 512
+            # self.inference_size = 512
+            self.inference_size = 1024
         elif self.model_type == "maskformer-cityscapes":
             self.active_model_name = self.maskformer_checkpoint
             self.custom_class_names = CITYSCAPES_CLASSES.copy()
