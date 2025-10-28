@@ -33,15 +33,17 @@ class AStarBevPlanner(Node):
         # --- ROS 2 파라미터 선언 ---
         # bev_map.py와 반드시 동일한 값을 사용해야 함
         self.declare_parameter('grid_resolution', 0.1)  # meters per cell
-        self.declare_parameter('grid_size_x', 15.0)     # total width in meters
-        self.declare_parameter('grid_size_y', 15.0)     # total height in meters
+        # self.declare_parameter('grid_size_x', 15.0)     # total width in meters
+        # self.declare_parameter('grid_size_y', 15.0)     # total height in meters
+        self.declare_parameter('grid_size_x', 60.0)     # total width in meters
+        self.declare_parameter('grid_size_y', 60.0)     # total height in meters        
         
         # A* 플래너 및 제어 파라미터
-        self.declare_parameter('inflation_radius', 0.3) # meters
-        self.declare_parameter('max_linear_velocity', 0.5)
+        self.declare_parameter('inflation_radius', 0.1) # meters
+        self.declare_parameter('max_linear_velocity', 0.6)
         self.declare_parameter('max_angular_velocity', 1.0)
         self.declare_parameter('look_ahead_dist', 0.7) # meters
-        self.declare_parameter('turn_damping_factor', 2.5)
+        self.declare_parameter('turn_damping_factor', 1.0)
 
         # --- 파라미터 값 가져오기 ---
         self.grid_resolution = self.get_parameter('grid_resolution').get_parameter_value().double_value
@@ -95,6 +97,7 @@ class AStarBevPlanner(Node):
         d4 = (-0.223, 2.4)
         d5 = (-2.55, 5.0)
 
+        # 1F loop
         d1 = (-0.3,1.88)
         d2 = (5.58,19.915)
         d3 = (2.606,36.25)
@@ -102,8 +105,18 @@ class AStarBevPlanner(Node):
         d5 = (-21.88,29.57)
         
         self.waypoints = [d1, d2, d3, d1, d4, d5,d1]
+
+        # # 6F 
+        d1 = (-5.6,0.48)
+        d2 = (-4.66,7.05)
+        d3 = (2.844,6.9)
+        d4 = (2.85,-0.68)
+        d5 = (-5.0,0.132)
+
+        self.waypoints = [d1, d2, d3, d4,d5, d1,d2,d3, d4,d5, d1,d2,d3, d4,d5, d1,d2]                 
+        # self.waypoints = [d3, d4, d5, d1,d2]
         self.waypoint_index = 0
-        self.goal_threshold = 0.6
+        self.goal_threshold = 0.7
 
         self.control_timer = self.create_timer(0.1, self.control_callback)
 
@@ -133,6 +146,13 @@ class AStarBevPlanner(Node):
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
         yaw = self.quaternion_to_yaw(msg.pose.pose.orientation)
+
+        # if yaw < 0.0:
+        #     yaw = yaw + math.pi
+        # else:
+        #     yaw = yaw - math.pi
+        
+
         with self.plot_data_lock:
             self.current_pose = [x, y, yaw]
             self.trajectory_data.append([x, y])
@@ -141,7 +161,7 @@ class AStarBevPlanner(Node):
         """뎁스 이미지를 수신하여 CV2 시각화용으로만 처리"""
         try:
             depth_cv = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
-            max_depth_value = 10.0
+            max_depth_value = 13.0
             depth_meters = (np.clip(depth_cv, 0, max_depth_value * 1000) / 1000.0).astype(np.float32)
             depth_display = cv2.applyColorMap((depth_meters / max_depth_value * 255).astype(np.uint8), cv2.COLORMAP_JET)
             
@@ -161,6 +181,7 @@ class AStarBevPlanner(Node):
             obstacle_points_local = []
             
             # 2. PointCloud를 순회하며 그리드 채우기
+            # TODO : use vector instead of forloop
             for point in pc2.read_points(msg, field_names=('x', 'y'), skip_nans=True):
                 x, y = point[0], point[1]
                 
@@ -364,6 +385,9 @@ class AStarBevPlanner(Node):
             angular_z = self.angular_gain * target_angle
             angular_z = np.clip(angular_z, -self.max_angular_velocity, self.max_angular_velocity)
             
+            if angular_z < 0.1 and angular_z > -0.1:
+                angular_z = 0.0
+
             # 각도가 클수록 속도 감속 (Nav2의 DWB 컨트롤러와 유사)
             linear_x = self.max_linear_velocity / (1.0 + self.turn_damping_factor * abs(angular_z))
             

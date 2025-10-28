@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
 
+
+"""
+iplanner problem in large scale goal point 
+
+1. Performance : not good planning at dynamic objects.
+2. Out of Distribution : in long distance or never seen distribution . output pred planning is wrong.
+3. 
+
+
+"""
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
@@ -26,12 +36,6 @@ from matplotlib.animation import FuncAnimation
 from planner_net import PlannerNet
 from traj_cost import TrajCost
 
-print('0925 test start!!!!!!!')
-print('0925 test start!!!!!!!')
-print('0925 test start!!!!!!!')
-print('0925 test start!!!!!!!')
-print('0925 test start!!!!!!!')
-
 class RealSensePlannerControl(Node):
     def __init__(self):
         super().__init__('realsense_planner_control_viz')
@@ -48,54 +52,11 @@ class RealSensePlannerControl(Node):
         
         # Odometry 및 웨이포인트 관련 변수
         self.current_pose = None
-        # self.waypoints = [(0.0, 0.0),(5.0, 0.0), (5.0, 10.0), (20.0, 10.0), (20.0, 50.0),(-20.0, 50.0),(-20.0,10.0),(5.0,10.0)]
-        # self.waypoints = [(0.0, 0.0),(0.0, 3.0), (0.0, 0.0), (0.0, 3.0),(0.0, 0.0),(3.0, 0.0), (3.0, 3.0), (0.0, 3.0),(0.0, 0.0),(3.0, 0.0), (3.0, 3.0), (0.0, 3.0),(0.0, 0.0)] # self rotation 3
 
+        # indoor test
+        # self.waypoints = [(0.0, 0.0),(2.5, 0.0), (2.5, -2.5), (0.0, -2.5),(0.0, 0.0),(2.6, 0.0), (2.6, 2.6), (0.0, 2.4),(0.0, 0.0),(2.6, 0.0), (2.0, 1.6), (0.0, 2.0),(0.0, 0.0)] # self rotation 3
 
-
-        d1 = (0.0,0.0) # (-0.138,-0.227) 
-        d2 = (2.7,0 ) # (2.516,-0.336) 
-        d3 = (2.433,2.274)
-        d4 = d2 #(-2.55,5.0)
-        d5 = d1 #(-0.223,2.4)
-        d6 = d2
-        d7 = d3
-        d8 = d2
-        d9 = d1 
-        d10 =d2
-        d11= d3
-        d12= d2
-        d13= d1 
-
-        self.waypoints = [d1,d2,d3,d4,d5,d6,d7,d8,d9,d10,d11,d12,d13]
-
-        d1 = (0.0,0.0) # (-0.138,-0.227) 
-        d2 = (2.7,0 ) # (2.516,-0.336) 
-        d3 = (2.433,2.274)
-        d4 = (-0.223,2.4)
-        d5 = (-2.55,5.0)
-        d6 = d4
-        d7 = d1
-        d8 = d2
-        d9 = d3 
-        d10 =d2
-        d11= d1
-        d12= d4
-        d13= d5
-        d14= d4
-        d15= d1 
-
-        self.waypoints = [d1,d2,d3,d1,d4,d5,d6,d7,d8,d9,d10,d11,d12,d13,d14,d15]
-
-  
-        # d0 = (0.6,3.5)
-        # d1 = (1.25,1.4)
-        # d2 = (4.189,-0.16667)
-
-        # self.waypoints = [d1,d2,d1,d0]
-        
-        # ## outdoor test 
-
+        # krm outdoor test 
 
         # d1 = (8.443,-12.5992) # start 
         # d2 = (17.57,-10.975)  # front of krm 
@@ -104,8 +65,21 @@ class RealSensePlannerControl(Node):
 
         # self.waypoints = [d1,d2,d3,d4,d3,d2,d1]
         
+        # 1F
+        d1 = (-0.3,1.88)
+        d2 = (5.58,19.915)
+        d3 = (2.606,36.25)
+        d4 = (-9.88,38.336)
+        d5 = (-21.88,29.57)
         
-        # self.waypoints = [(0.0, 0.0),(2.5, 0.0), (2.5, -2.5), (0.0, -2.5),(0.0, 0.0),(2.6, 0.0), (2.6, 2.6), (0.0, 2.4),(0.0, 0.0),(2.6, 0.0), (2.0, 1.6), (0.0, 2.0),(0.0, 0.0)] # self rotation 3
+        # 6F 
+        d1 = (-5.6,0.48)
+        d2 = (-4.66,7.05)
+        d3 = (2.844,6.9)
+        d4 = (2.85,-0.68)
+        d5 = (-5.6,0.48)
+
+        self.waypoints = [d1, d2, d3, d1, d4, d5,d1]
         
         self.waypoint_index = 0 # len(self.waypoints)
         self.goal_threshold = 0.7
@@ -143,6 +117,8 @@ class RealSensePlannerControl(Node):
         self.min_linear_velocity = 0.15  # 로봇의 최소 직진 속도 (m/s)
         self.max_angular_velocity = 1.0   # 로봇의 최대 회전 속도 (rad/s)
         
+        self.old_angular_z = 0.0 # angular z 
+
         # Pure Pursuit Controller 파라미터
         self.look_ahead_dist_base = 0.95  # 기본 전방 주시 거리 (m)
         self.look_ahead_dist_k = 0.3     # 속도에 비례한 전방 주시 거리 계수
@@ -158,6 +134,8 @@ class RealSensePlannerControl(Node):
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
         yaw = self.quaternion_to_yaw(msg.pose.pose.orientation)
+        # yaw = yaw + math.pi
+
         with self.plot_data_lock:
             self.current_pose = [x, y, yaw]
             self.trajectory_data.append([x, y])
@@ -188,7 +166,7 @@ class RealSensePlannerControl(Node):
         try:
             depth_cv = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
             max_depth_value = 10.0 # meter  unit 
-            depth_cv = (np.clip(depth_cv, 0, max_depth_value*1000) / 1000.0).astype(np.float32) # mm => meter range change 
+            epth_cv = (np.clip(depth_cv, 0, max_depth_value*1000) / 1000.0).astype(np.float32) # mm => meter range change 
             depth_cv[depth_cv>max_depth_value] = 0 # over max depth value is zero value
 
             depth_cv = depth_cv / max_depth_value
@@ -217,6 +195,8 @@ class RealSensePlannerControl(Node):
             self.get_logger().error(f"Depth processing error: {e}")
 
     def control_callback(self):
+
+        
         if self.current_depth_tensor is None or self.current_pose is None:
             return
 
@@ -278,6 +258,8 @@ class RealSensePlannerControl(Node):
 
                 # cmd_vels = self.waypoints_to_cmd_vel(waypoints_tensor)
                 # shape = (1,5,2)
+
+                # cmd_vels (1,5 node num, 2 x,y )
                 # tensor([[
                 # [11.2652, -4.3225],
                 # [10.1447,  3.3032],
@@ -291,23 +273,27 @@ class RealSensePlannerControl(Node):
                 fear_val = fear.cpu().item()
 
                 # select k preds  and k+H preds mean 
-                k =2
+                k = 4
                 h = 3
                 ############################################################## use pred waypoints directly control
                 angular_z = torch.clamp(cmd_vels[0, k:k+h, 1], -1.0, 1.0).mean().cpu().item()
 
+                self.old_angular_z = angular_z
+                # angular_z = (angular_z + self.old_angular_z)/2 
+
+                
                 angular_z = self._discretize_value(angular_z,0.2)
                 # angular_z = 1.5*angular_z
 
                 # main controller 
 
-                linear_x= 0.4
-                if angular_z >=0.4:
+                linear_x= 0.55
+                if angular_z >=0.55:
                     linear_x = 0 
 
 
                 
-                stop_distance =  0.1 #meter # 0.77
+                stop_distance =  0.077 #meter # 0.77
 
                 width,height = 640,360
                 """

@@ -59,8 +59,10 @@ class ReconstructionConfig:
     """Main configuration for point cloud reconstruction"""
     use_semantic: bool = True
     model_type: str ="maskformer-cityscapes"
-    custom_object_model_path: str = "best_object_model.pth"
-    custom_surface_model_path: str = "best_surface_model.pth"
+    
+    custom_object_model_path: str = "models/dynamic_object/best_model2.pth.pth"
+    custom_surface_model_path: str = "models/surface/surface_mask_best_lrup.pt.pth"
+
     segformer_checkpoint: str = "nvidia/segformer-b0-finetuned-cityscapes-1024-1024"
     maskformer_checkpoint: str = "facebook/mask2former-swin-tiny-cityscapes-semantic"
     active_model_name: str = field(init=False)
