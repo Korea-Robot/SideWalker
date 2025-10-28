@@ -44,16 +44,16 @@ class PointCloudBEVNode(Node):
         self.declare_parameter('cam.width', 848)
 
         # PCL 다운샘플링 (Y축, X축)
-        self.declare_parameter('pcl.downsample_y', 9)
-        self.declare_parameter('pcl.downsample_x', 6)
+        self.declare_parameter('pcl.downsample_y', 3) #9
+        self.declare_parameter('pcl.downsample_x', 2) #6
 
         # BEV 파라미터
         self.declare_parameter('bev_topic', '/bev_map')
-        self.declare_parameter('bev.z_min', 0.15)       # BEV 높이 필터 최소값
+        self.declare_parameter('bev.z_min', 0.1)       # BEV 높이 필터 최소값
         self.declare_parameter('bev.z_max', 1.0)        # BEV 높이 필터 최대값
         self.declare_parameter('bev.resolution', 0.05)   # BEV 그리드 해상도 (m/cell)
-        self.declare_parameter('bev.size_x', 30.0)      # BEV 맵 전체 X 크기 (m)
-        self.declare_parameter('bev.size_y', 30.0)      # BEV 맵 전체 Y 크기 (m)
+        self.declare_parameter('bev.size_x', 40.0)      # BEV 맵 전체 X 크기 (m)
+        self.declare_parameter('bev.size_y', 40.0)      # BEV 맵 전체 Y 크기 (m)
 
         # --- 3. 파라미터 값 할당 ---
         # PCL 파라미터

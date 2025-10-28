@@ -104,7 +104,7 @@ class AStarBevPlanner(Node):
         d4 = (-9.88,38.336)
         d5 = (-21.88,29.57)
         
-        self.waypoints = [d1, d2, d3, d1, d4, d5,d1]
+        self.waypoints = [d1, d2, d3, d4, d5,d1]
 
         # # 6F 
         d1 = (-5.6,0.48)
