@@ -90,7 +90,7 @@ class SemanticPointCloudBEVNode(Node):
 
         # Semantic BEV 파라미터
         self.declare_parameter('semantic_bev_topic', self.config.bev_topic)
-        self.declare_parameter('bev.z_min', 0.15)
+        self.declare_parameter('bev.z_min', -0.35)
         self.declare_parameter('bev.z_max', 1.0)
         self.declare_parameter('bev.resolution', 0.1)
         self.declare_parameter('bev.size_x', 30.0)

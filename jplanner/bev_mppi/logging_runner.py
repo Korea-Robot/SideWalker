@@ -21,7 +21,8 @@ import torch
 # -------------------------
 
 # --- 모듈화된 코드 임포트 ---
-from controller import MPPIController
+# from optimized_controller import MPPIController
+from logging_controller import MPPIController
 # from visualizer import setup_visualization
 from bold_visualizer import setup_visualization
 # -----------------------------
@@ -46,21 +47,21 @@ class MPPIBevPlanner(Node):
 
         # --- 1. ROS 2 파라미터 선언 ---
         self.declare_parameter('grid_resolution', 0.1)
-        self.declare_parameter('grid_size_x', 30.0)
-        self.declare_parameter('grid_size_y', 20.0)
+        self.declare_parameter('grid_size_x', 40.0)
+        self.declare_parameter('grid_size_y', 30.0)
         self.declare_parameter('inflation_radius', 0.1)
         self.declare_parameter('max_linear_velocity', 0.6)
-        self.declare_parameter('min_linear_velocity', 0.2)
+        self.declare_parameter('min_linear_velocity', 0.15)
         self.declare_parameter('max_angular_velocity', 1.0)
         self.declare_parameter('goal_threshold', 0.6)
-        self.declare_parameter('mppi_k', 1000)
-        self.declare_parameter('mppi_t', 100)
+        self.declare_parameter('mppi_k', 4000)
+        self.declare_parameter('mppi_t', 50)
         self.declare_parameter('mppi_dt', 0.1)
         self.declare_parameter('mppi_lambda', 1.0)
         self.declare_parameter('mppi_sigma_v', 0.1)
         self.declare_parameter('mppi_sigma_w', 0.2)
-        self.declare_parameter('goal_cost_weight', 25.0)
-        self.declare_parameter('obstacle_cost_weight', 100.0)
+        self.declare_parameter('goal_cost_weight', 95.0)
+        self.declare_parameter('obstacle_cost_weight', 144.0)
         self.declare_parameter('control_cost_weight', 0.1)
         self.declare_parameter('num_samples_to_plot', 50)
 
@@ -109,21 +110,13 @@ class MPPIBevPlanner(Node):
         self.get_logger().info(f"Using device: {self.device}")
         
         # --- 6. 웨이포인트 ---
-        # --- 웨이포인트 ---
         # 6F 
         d1 = (-5.6,0.48)
         d2 = (-4.66,7.05)
         d3 = (2.844,6.9)
         d4 = (2.85,-0.68)
         d5 = (-5.0,0.132)
-
-        d1 = (5.035,-5.204)
-        d2 = (-3.25,-4.72) 
-        d3 = (-4.32,-11.68)
-        d4 = (4.52,-12.17)
-        d5 = d1 
-
-        self.waypoints = [d1, d2, d3, d4,d5, d1,d2,d3, d4,d5, d1,d2,d3, d4,d5, d1,d2]
+        # self.waypoints = [d1, d2, d3, d4,d5, d1,d2,d3, d4,d5, d1,d2,d3, d4,d5, d1,d2]
 
 
         # 1F loop
@@ -132,9 +125,29 @@ class MPPIBevPlanner(Node):
         d3 = (2.606,36.25)
         d4 = (-9.88,38.336)
         d5 = (-21.88,29.57)
-        
+
+        # 1029 6F
+        d1 = (0.09,-0.08)
+        d2 = (6.60,0.84)
+        d3 = (7.92,-7.85)
+        d4 = (0.74,-8.18)
+
+
         self.waypoints = [d1, d2, d3, d4, d5,d1]
+
+        # 1F large map 
+
+        # d1 = ( 1.18, -0.14)
+        # d2 = ( 1.12, -0.92)
+        d3 = ( 17.73, 1.23)
+        d4 = ( 21.39, 19.28)
+        d5 = ( 22.16, 29.43)
+        d6 = ( 42.10, 28.57)
+        d7 = ( 39.79, 17.11)
+        d8 = ( 21.21, 17.41)
+        self.waypoints = [d3, d4, d5,d6,d7,d8,d3,d2]
         
+              
         self.waypoint_index = 0
         
         # --- 7. Matplotlib 시각화 데이터 및 잠금 ---
@@ -167,7 +180,47 @@ class MPPIBevPlanner(Node):
         # --- 9. 제어 루프 타이머 ---
         self.control_timer = self.create_timer(self.dt, self.control_callback)
 
+        # --- 10. (신규) 1초 로깅 타이머 및 상태 변수 ---
+        self.last_control_callback_time_ms = 0.0
+        self.last_mppi_run_time_ms = 0.0
+        self.last_bev_map_callback_time_ms = 0.0
+        self.current_status = "Initializing" # 현재 노드 상태
+        self.logging_timer = self.create_timer(1.0, self.logging_callback) # 1초 타이머
+        # -------------------------------------------------
+
         self.get_logger().info("✅ MPPI BEV Planner (Modularized) has started.")
+
+    # --- (신규) 1초 로깅 콜백 ---
+    
+    def logging_callback(self):
+        """1초마다 현재 상태와 성능을 로깅합니다."""
+        
+        # 스레드 안전하게 성능 데이터 복사
+        with self.plot_data_lock:
+            status = self.current_status
+            mppi_time = self.last_mppi_run_time_ms
+            control_time = self.last_control_callback_time_ms
+            bev_time = self.last_bev_map_callback_time_ms
+            
+            # 참고: control_time (e.g., 25ms)은 mppi_time (e.g., 20ms)보다 항상 큽니다.
+            other_control_time = control_time - mppi_time
+        
+        # 제어 루프(dt) 대비 MPPI 연산이 얼마나 여유가 있는지
+        # mppi_time이 20ms이고 dt가 100ms이면, 80ms의 여유(slack)가 있음
+        loop_slack_ms = (self.dt * 1000.0) - mppi_time 
+
+        log_msg = (
+            f"\n--- MPPI Status (1s Heartbeat) ---\n"
+            f"  Status: {status}\n"
+            f"  Loop Slack: {loop_slack_ms:6.1f} ms (Target: {self.dt * 1000.0:.0f} ms)\n"
+            f"  Performance (Last call, ms):\n"
+            f"    ├─ MPPI.run_mppi(): {mppi_time:8.2f} ms\n"
+            f"    ├─ Other Control Logic: {other_control_time:4.2f} ms\n"
+            f"    ├─ Total Control Callback: {control_time:5.2f} ms\n"
+            f"    └─ BEV Map Callback: {bev_time:9.2f} ms"
+        )
+        self.get_logger().info(log_msg)
+
 
     # --- ROS 콜백 함수들 ---
 
@@ -186,6 +239,7 @@ class MPPIBevPlanner(Node):
             self.trajectory_data.append([x, y])
 
     def bev_map_callback(self, msg: PointCloud2):
+        start_time = time.perf_counter() # (신규) 시간 측정 시작
         try:
             grid = np.zeros((self.cells_y, self.cells_x), dtype=np.uint8)
             obstacle_points_local = []
@@ -207,6 +261,12 @@ class MPPIBevPlanner(Node):
 
         except Exception as e:
             self.get_logger().error(f"BEV map processing error: {e}\n{traceback.format_exc()}")
+        finally:
+            # (신규) 시간 측정 종료 및 저장
+            end_time = time.perf_counter()
+            with self.plot_data_lock:
+                self.last_bev_map_callback_time_ms = (end_time - start_time) * 1000.0
+
 
     def world_to_grid_idx_numpy(self, x, y):
         grid_c = int((x - self.grid_origin_x) / self.grid_resolution)
@@ -236,18 +296,28 @@ class MPPIBevPlanner(Node):
         메인 제어 루프. 
         데이터를 준비하고, 컨트롤러를 호출하며, 결과를 발행하고, 시각화 데이터를 업데이트합니다.
         """
+        control_start_time = time.perf_counter() # (신규) 전체 콜백 시간 측정 시작
         
         if self.current_pose is None:
             self.get_logger().warn("Waiting for odometry...")
+            with self.plot_data_lock:
+                self.current_status = "Waiting for Odometry" # (신규) 상태 업데이트
             return
 
         try:
             # 1. 웨이포인트 도달 확인
             if self.waypoint_index >= len(self.waypoints):
                 self.get_logger().info("🎉 All waypoints reached! Stopping.")
+                with self.plot_data_lock:
+                    self.current_status = "All waypoints reached" # (신규) 상태 업데이트
                 self.stop_robot()
                 self.control_timer.cancel()
+                self.logging_timer.cancel() # (신규) 로깅 타이머도 중지
                 return
+
+            # (신규) 현재 상태 업데이트
+            with self.plot_data_lock:
+                self.current_status = f"Running to WP {self.waypoint_index+1}/{len(self.waypoints)}"
 
             # 2. 현재 상태 및 목표 설정
             current_x, current_y, current_yaw = self.current_pose
@@ -273,15 +343,26 @@ class MPPIBevPlanner(Node):
             )
             
             # 5. ★ MPPI 컨트롤러 실행 ★
-            # 컨트롤러는 (v, w), optimal_traj, sampled_trajs를 반환
+            # (신규) MPPI 연산 시간만 별도 측정
+            mppi_start_time = time.perf_counter()
+            
             control_tuple, opt_traj_gpu, sampled_trajs_gpu = self.controller.run_mppi(
                 local_goal_tensor, 
-                self.costmap_tensor # 최신 Costmap 텐서를 전달 # shape [200,300]
+                self.costmap_tensor # 최신 Costmap 텐서를 전달
             )
+            
+            mppi_end_time = time.perf_counter()
+            mppi_run_time_ms = (mppi_end_time - mppi_start_time) * 1000.0
+            
+            # (신규) MPPI 연산 시간 저장
+            with self.plot_data_lock:
+                self.last_mppi_run_time_ms = mppi_run_time_ms
             
             # 6. 컨트롤러 실행 결과 처리
             if control_tuple is None: # e.g., Costmap이 준비되지 않음
                 self.get_logger().warn("MPPI controller failed. Stopping.")
+                with self.plot_data_lock:
+                    self.current_status = "Controller Failed (Costmap?)" # (신규) 상태 업데이트
                 self.stop_robot()
                 return
             
@@ -301,10 +382,22 @@ class MPPIBevPlanner(Node):
 
         except Exception as e:
             self.get_logger().error(f"Control loop error: {e}\n{traceback.format_exc()}")
+            with self.plot_data_lock:
+                self.current_status = "ERROR in control loop" # (신규) 상태 업데이트
             self.stop_robot()
+        finally:
+            # (신규) 전체 콜백 시간 측정 및 저장
+            control_end_time = time.perf_counter()
+            with self.plot_data_lock:
+                self.last_control_callback_time_ms = (control_end_time - control_start_time) * 1000.0
+
             
     def destroy_node(self):
         self.get_logger().info("Shutting down... Stopping robot.")
+        if self.control_timer:
+            self.control_timer.cancel()
+        if self.logging_timer: # (신규) 로깅 타이머 취소
+            self.logging_timer.cancel()
         self.stop_robot()
         super().destroy_node()
 
@@ -333,3 +426,4 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+

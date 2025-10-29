@@ -21,7 +21,7 @@ import torch
 # -------------------------
 
 # --- 모듈화된 코드 임포트 ---
-from controller import MPPIController
+from optimized_controller import MPPIController
 # from visualizer import setup_visualization
 from bold_visualizer import setup_visualization
 # -----------------------------
@@ -46,23 +46,28 @@ class MPPIBevPlanner(Node):
 
         # --- 1. ROS 2 파라미터 선언 ---
         self.declare_parameter('grid_resolution', 0.1)
-        self.declare_parameter('grid_size_x', 30.0)
-        self.declare_parameter('grid_size_y', 20.0)
+        self.declare_parameter('grid_size_x', 40.0)
+        self.declare_parameter('grid_size_y', 30.0)
         self.declare_parameter('inflation_radius', 0.1)
         self.declare_parameter('max_linear_velocity', 0.6)
-        self.declare_parameter('min_linear_velocity', 0.2)
+        self.declare_parameter('min_linear_velocity', 0.15)
         self.declare_parameter('max_angular_velocity', 1.0)
-        self.declare_parameter('goal_threshold', 0.6)
-        self.declare_parameter('mppi_k', 1000)
-        self.declare_parameter('mppi_t', 100)
+        self.declare_parameter('goal_threshold', 0.5)
+        self.declare_parameter('mppi_k', 5000)
+        self.declare_parameter('mppi_t', 40)
         self.declare_parameter('mppi_dt', 0.1)
         self.declare_parameter('mppi_lambda', 1.0)
         self.declare_parameter('mppi_sigma_v', 0.1)
-        self.declare_parameter('mppi_sigma_w', 0.2)
-        self.declare_parameter('goal_cost_weight', 25.0)
-        self.declare_parameter('obstacle_cost_weight', 100.0)
+        self.declare_parameter('mppi_sigma_w', 0.3)
+        self.declare_parameter('goal_cost_weight', 95.0)
+        self.declare_parameter('obstacle_cost_weight', 244.0)
         self.declare_parameter('control_cost_weight', 0.1)
         self.declare_parameter('num_samples_to_plot', 50)
+
+        # (신규) 충돌 감지기 파라미터
+        self.declare_parameter('collision_check_distance', 0.5) # [m] 로봇 전방 50cm
+        self.declare_parameter('collision_check_width', 0.25)    # [m] 로봇 좌우 25cm (총 40cm)
+        self.declare_parameter('collision_cost_threshold', 250.0) # 255에 가까우면 정지
 
         # --- 2. 파라미터 값 가져오기 ---
         # (가독성을 위해 .get_parameter()...를 변수로 저장)
@@ -85,6 +90,11 @@ class MPPIBevPlanner(Node):
         self.control_cost_w = self.get_parameter('control_cost_weight').get_parameter_value().double_value
         self.num_samples_to_plot = self.get_parameter('num_samples_to_plot').get_parameter_value().integer_value
 
+        # (신규) 충돌 감지기 파라미터 가져오기
+        self.collision_check_distance = self.get_parameter('collision_check_distance').get_parameter_value().double_value
+        self.collision_check_width = self.get_parameter('collision_check_width').get_parameter_value().double_value
+        self.collision_cost_threshold = self.get_parameter('collision_cost_threshold').get_parameter_value().double_value
+
         # --- 3. Grid 및 BEV 설정 ---
         self.cells_x = int(self.size_x / self.grid_resolution)
         self.cells_y = int(self.size_y / self.grid_resolution)
@@ -94,6 +104,28 @@ class MPPIBevPlanner(Node):
         self.inflation_kernel = cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE, (2 * inflation_cells + 1, 2 * inflation_cells + 1)
         )
+        
+        # (신규) 충돌 감지를 위한 그리드 셀 계산
+        # 로봇 (0,0)의 그리드 인덱스
+        self.robot_grid_c = int((0.0 - self.grid_origin_x) / self.grid_resolution)
+        self.robot_grid_r = int((0.0 - self.grid_origin_y) / self.grid_resolution)
+        
+        # 확인할 거리/폭을 셀 개수로 변환
+        check_dist_cells = int(self.collision_check_distance / self.grid_resolution)
+        check_width_cells = int(self.collision_check_width / self.grid_resolution)
+        
+        # (신규) Costmap에서 확인할 영역(ROI)의 인덱스를 미리 계산 (클램핑 포함)
+        self.roi_r_start = max(0, self.robot_grid_r - check_width_cells // 2)
+        self.roi_r_end = min(self.cells_y, self.robot_grid_r + check_width_cells // 2)
+        self.roi_c_start = max(0, self.robot_grid_c) # 로봇 위치부터
+        self.roi_c_end = min(self.cells_x, self.robot_grid_c + check_dist_cells) # 전방으로
+
+        self.get_logger().info(
+            f"Collision checker ROI (grid indices):\n"
+            f"  Rows (width): {self.roi_r_start} to {self.roi_r_end}\n"
+            f"  Cols (dist):  {self.roi_c_start} to {self.roi_c_end}"
+        )
+
         
         # --- 4. ROS2 Setup ---
         self.bev_sub = self.create_subscription(
@@ -108,22 +140,17 @@ class MPPIBevPlanner(Node):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.get_logger().info(f"Using device: {self.device}")
         
+        # (신규) 충돌 상태
+        self.collision_detected_last_step = False
+        
         # --- 6. 웨이포인트 ---
-        # --- 웨이포인트 ---
         # 6F 
         d1 = (-5.6,0.48)
         d2 = (-4.66,7.05)
         d3 = (2.844,6.9)
         d4 = (2.85,-0.68)
         d5 = (-5.0,0.132)
-
-        d1 = (5.035,-5.204)
-        d2 = (-3.25,-4.72) 
-        d3 = (-4.32,-11.68)
-        d4 = (4.52,-12.17)
-        d5 = d1 
-
-        self.waypoints = [d1, d2, d3, d4,d5, d1,d2,d3, d4,d5, d1,d2,d3, d4,d5, d1,d2]
+        # self.waypoints = [d1, d2, d3, d4,d5, d1,d2,d3, d4,d5, d1,d2,d3, d4,d5, d1,d2]
 
 
         # 1F loop
@@ -132,9 +159,29 @@ class MPPIBevPlanner(Node):
         d3 = (2.606,36.25)
         d4 = (-9.88,38.336)
         d5 = (-21.88,29.57)
-        
+
+        # 1029 6F
+        d1 = (0.09,-0.08)
+        d2 = (6.60,0.84)
+        d3 = (7.92,-7.85)
+        d4 = (0.74,-8.18)
+        d5 = d1
+
+
         self.waypoints = [d1, d2, d3, d4, d5,d1]
-        
+
+        # 1F large map 
+
+        # d1 = ( 1.18, -0.14)
+        d2 = ( 17.73, 1.23)
+        d3 = (22.17,11.71)
+        d4 = ( 21.39, 19.28)
+        d5 = ( 22.16, 29.43)
+        d6 = ( 42.10, 28.57)
+        d7 = ( 39.79, 17.11)
+        d8 = ( 21.21, 17.41)
+        self.waypoints = [d3,d4, d5,d6,d7,d8,d3,d2]
+
         self.waypoint_index = 0
         
         # --- 7. Matplotlib 시각화 데이터 및 잠금 ---
@@ -167,7 +214,47 @@ class MPPIBevPlanner(Node):
         # --- 9. 제어 루프 타이머 ---
         self.control_timer = self.create_timer(self.dt, self.control_callback)
 
+        # --- 10. (신규) 1초 로깅 타이머 및 상태 변수 ---
+        self.last_control_callback_time_ms = 0.0
+        self.last_mppi_run_time_ms = 0.0
+        self.last_bev_map_callback_time_ms = 0.0
+        self.current_status = "Initializing" # 현재 노드 상태
+        self.logging_timer = self.create_timer(1.0, self.logging_callback) # 1초 타이머
+        # -------------------------------------------------
+
         self.get_logger().info("✅ MPPI BEV Planner (Modularized) has started.")
+
+    # --- (신규) 1초 로깅 콜백 ---
+    
+    def logging_callback(self):
+        """1초마다 현재 상태와 성능을 로깅합니다."""
+        
+        # 스레드 안전하게 성능 데이터 복사
+        with self.plot_data_lock:
+            status = self.current_status
+            mppi_time = self.last_mppi_run_time_ms
+            control_time = self.last_control_callback_time_ms
+            bev_time = self.last_bev_map_callback_time_ms
+            
+            # 참고: control_time (e.g., 25ms)은 mppi_time (e.g., 20ms)보다 항상 큽니다.
+            other_control_time = control_time - mppi_time
+        
+        # 제어 루프(dt) 대비 MPPI 연산이 얼마나 여유가 있는지
+        # mppi_time이 20ms이고 dt가 100ms이면, 80ms의 여유(slack)가 있음
+        loop_slack_ms = (self.dt * 1000.0) - mppi_time 
+
+        log_msg = (
+            f"\n--- MPPI Status (1s Heartbeat) ---\n"
+            f"  Status: {status}\n"
+            f"  Loop Slack: {loop_slack_ms:6.1f} ms (Target: {self.dt * 1000.0:.0f} ms)\n"
+            f"  Performance (Last call, ms):\n"
+            f"    ├─ MPPI.run_mppi(): {mppi_time:8.2f} ms\n"
+            f"    ├─ Other Control Logic: {other_control_time:4.2f} ms\n"
+            f"    ├─ Total Control Callback: {control_time:5.2f} ms\n"
+            f"    └─ BEV Map Callback: {bev_time:9.2f} ms"
+        )
+        self.get_logger().info(log_msg)
+
 
     # --- ROS 콜백 함수들 ---
 
@@ -186,6 +273,7 @@ class MPPIBevPlanner(Node):
             self.trajectory_data.append([x, y])
 
     def bev_map_callback(self, msg: PointCloud2):
+        start_time = time.perf_counter() # (신규) 시간 측정 시작
         try:
             grid = np.zeros((self.cells_y, self.cells_x), dtype=np.uint8)
             obstacle_points_local = []
@@ -207,6 +295,12 @@ class MPPIBevPlanner(Node):
 
         except Exception as e:
             self.get_logger().error(f"BEV map processing error: {e}\n{traceback.format_exc()}")
+        finally:
+            # (신규) 시간 측정 종료 및 저장
+            end_time = time.perf_counter()
+            with self.plot_data_lock:
+                self.last_bev_map_callback_time_ms = (end_time - start_time) * 1000.0
+
 
     def world_to_grid_idx_numpy(self, x, y):
         grid_c = int((x - self.grid_origin_x) / self.grid_resolution)
@@ -229,6 +323,34 @@ class MPPIBevPlanner(Node):
             self.latest_optimal_trajectory_local = np.array([])
             self.latest_sampled_trajectories_local = np.array([])
 
+    # --- (신규) 충돌 감지 함수 ---
+    
+    def check_for_imminent_collision(self) -> bool:
+        """
+        미리 계산된 ROI를 사용해 costmap_tensor에서 즉각적인 충돌을 확인합니다.
+        로봇 전방의 'danger_zone'에 임계값 이상의 장애물이 있는지 확인합니다.
+        """
+        if self.costmap_tensor is None:
+            # self.get_logger().warn("Collision Check: Costmap not ready.", throttle_duration_sec=1.0)
+            return False # 맵이 없으면 일단 간다
+            
+        try:
+            # 미리 계산된 ROI 인덱스를 사용하여 Costmap의 'danger zone'을 슬라이싱
+            danger_zone = self.costmap_tensor[
+                self.roi_r_start : self.roi_r_end,
+                self.roi_c_start : self.roi_c_end
+            ]
+            
+            # 이 영역에 임계값을 넘는 셀이 하나라도 있는지 확인
+            if torch.any(danger_zone >= self.collision_cost_threshold):
+                return True
+                
+        except Exception as e:
+            self.get_logger().error(f"Collision check error: {e}\n{traceback.format_exc()}")
+            return True # 에러 발생 시 안전을 위해 멈춤
+            
+        return False
+
     # --- 메인 제어 루프 ---
 
     def control_callback(self):
@@ -236,18 +358,46 @@ class MPPIBevPlanner(Node):
         메인 제어 루프. 
         데이터를 준비하고, 컨트롤러를 호출하며, 결과를 발행하고, 시각화 데이터를 업데이트합니다.
         """
+        control_start_time = time.perf_counter() # (신규) 전체 콜백 시간 측정 시작
         
         if self.current_pose is None:
             self.get_logger().warn("Waiting for odometry...")
+            with self.plot_data_lock:
+                self.current_status = "Waiting for Odometry" # (신규) 상태 업데이트
             return
 
         try:
+            # --- (신규) 0. 즉각적인 충돌 감지 ---
+            # MPPI 계산 전에 코스트맵을 기반으로 비상 정지 확인
+            if self.check_for_imminent_collision():
+                if not self.collision_detected_last_step:
+                    self.get_logger().warn("🛑 IMMINENT COLLISION DETECTED! Stopping robot.")
+                
+                self.stop_robot()
+                with self.plot_data_lock:
+                    self.current_status = "COLLISION STOP"
+                self.collision_detected_last_step = True
+                return # MPPI 계산 및 주행 중지
+            
+            # 충돌이 감지되었다가 해제된 경우
+            if self.collision_detected_last_step:
+                self.get_logger().info("✅ Collision clear. Resuming navigation.")
+                self.collision_detected_last_step = False
+            # ---------------------------------
+
             # 1. 웨이포인트 도달 확인
             if self.waypoint_index >= len(self.waypoints):
                 self.get_logger().info("🎉 All waypoints reached! Stopping.")
+                with self.plot_data_lock:
+                    self.current_status = "All waypoints reached" # (신규) 상태 업데이트
                 self.stop_robot()
                 self.control_timer.cancel()
+                self.logging_timer.cancel() # (신규) 로깅 타이머도 중지
                 return
+
+            # (신규) 현재 상태 업데이트
+            with self.plot_data_lock:
+                self.current_status = f"Running to WP {self.waypoint_index+1}/{len(self.waypoints)}"
 
             # 2. 현재 상태 및 목표 설정
             current_x, current_y, current_yaw = self.current_pose
@@ -273,15 +423,26 @@ class MPPIBevPlanner(Node):
             )
             
             # 5. ★ MPPI 컨트롤러 실행 ★
-            # 컨트롤러는 (v, w), optimal_traj, sampled_trajs를 반환
+            # (신규) MPPI 연산 시간만 별도 측정
+            mppi_start_time = time.perf_counter()
+            
             control_tuple, opt_traj_gpu, sampled_trajs_gpu = self.controller.run_mppi(
                 local_goal_tensor, 
-                self.costmap_tensor # 최신 Costmap 텐서를 전달 # shape [200,300]
+                self.costmap_tensor # 최신 Costmap 텐서를 전달
             )
+            
+            mppi_end_time = time.perf_counter()
+            mppi_run_time_ms = (mppi_end_time - mppi_start_time) * 1000.0
+            
+            # (신규) MPPI 연산 시간 저장
+            with self.plot_data_lock:
+                self.last_mppi_run_time_ms = mppi_run_time_ms
             
             # 6. 컨트롤러 실행 결과 처리
             if control_tuple is None: # e.g., Costmap이 준비되지 않음
-                self.get_logger().warn("MPPI controller failed. Stopping.")
+                self.get_logger().warn("MPPI controller failed (Costmap not ready?). Stopping.")
+                with self.plot_data_lock:
+                    self.current_status = "Controller Failed (Costmap?)" 
                 self.stop_robot()
                 return
             
@@ -301,10 +462,22 @@ class MPPIBevPlanner(Node):
 
         except Exception as e:
             self.get_logger().error(f"Control loop error: {e}\n{traceback.format_exc()}")
+            with self.plot_data_lock:
+                self.current_status = "ERROR in control loop" # (신규) 상태 업데이트
             self.stop_robot()
+        finally:
+            # (신규) 전체 콜백 시간 측정 및 저장
+            control_end_time = time.perf_counter()
+            with self.plot_data_lock:
+                self.last_control_callback_time_ms = (control_end_time - control_start_time) * 1000.0
+
             
     def destroy_node(self):
         self.get_logger().info("Shutting down... Stopping robot.")
+        if self.control_timer:
+            self.control_timer.cancel()
+        if self.logging_timer: # (신규) 로깅 타이머 취소
+            self.logging_timer.cancel()
         self.stop_robot()
         super().destroy_node()
 
@@ -333,3 +506,5 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+
+

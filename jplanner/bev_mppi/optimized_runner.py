@@ -21,7 +21,7 @@ import torch
 # -------------------------
 
 # --- 모듈화된 코드 임포트 ---
-from controller import MPPIController
+from optimized_controller import MPPIController
 # from visualizer import setup_visualization
 from bold_visualizer import setup_visualization
 # -----------------------------
@@ -49,18 +49,18 @@ class MPPIBevPlanner(Node):
         self.declare_parameter('grid_size_x', 30.0)
         self.declare_parameter('grid_size_y', 20.0)
         self.declare_parameter('inflation_radius', 0.1)
-        self.declare_parameter('max_linear_velocity', 0.6)
+        self.declare_parameter('max_linear_velocity', 1.0)
         self.declare_parameter('min_linear_velocity', 0.2)
         self.declare_parameter('max_angular_velocity', 1.0)
         self.declare_parameter('goal_threshold', 0.6)
-        self.declare_parameter('mppi_k', 1000)
-        self.declare_parameter('mppi_t', 100)
+        self.declare_parameter('mppi_k', 2000)
+        self.declare_parameter('mppi_t', 50)
         self.declare_parameter('mppi_dt', 0.1)
         self.declare_parameter('mppi_lambda', 1.0)
         self.declare_parameter('mppi_sigma_v', 0.1)
         self.declare_parameter('mppi_sigma_w', 0.2)
         self.declare_parameter('goal_cost_weight', 25.0)
-        self.declare_parameter('obstacle_cost_weight', 100.0)
+        self.declare_parameter('obstacle_cost_weight', 40.0)
         self.declare_parameter('control_cost_weight', 0.1)
         self.declare_parameter('num_samples_to_plot', 50)
 
@@ -117,23 +117,32 @@ class MPPIBevPlanner(Node):
         d4 = (2.85,-0.68)
         d5 = (-5.0,0.132)
 
+
         d1 = (5.035,-5.204)
         d2 = (-3.25,-4.72) 
         d3 = (-4.32,-11.68)
         d4 = (4.52,-12.17)
+
+
+        # 1029 6F
+        d1 = (0.09,-0.08)
+        d2 = (6.60,0.84)
+        d3 = (7.92,-7.85)
+        d4 = (0.74,-8.18)
+
         d5 = d1 
 
         self.waypoints = [d1, d2, d3, d4,d5, d1,d2,d3, d4,d5, d1,d2,d3, d4,d5, d1,d2]
 
 
         # 1F loop
-        d1 = (-0.3,1.88)
-        d2 = (5.58,19.915)
-        d3 = (2.606,36.25)
-        d4 = (-9.88,38.336)
-        d5 = (-21.88,29.57)
+        # d1 = (-0.3,1.88)
+        # d2 = (5.58,19.915)
+        # d3 = (2.606,36.25)
+        # d4 = (-9.88,38.336)
+        # d5 = (-21.88,29.57)
         
-        self.waypoints = [d1, d2, d3, d4, d5,d1]
+        # self.waypoints = [d1, d2, d3, d4, d5,d1]
         
         self.waypoint_index = 0
         
@@ -276,7 +285,7 @@ class MPPIBevPlanner(Node):
             # 컨트롤러는 (v, w), optimal_traj, sampled_trajs를 반환
             control_tuple, opt_traj_gpu, sampled_trajs_gpu = self.controller.run_mppi(
                 local_goal_tensor, 
-                self.costmap_tensor # 최신 Costmap 텐서를 전달 # shape [200,300]
+                self.costmap_tensor # 최신 Costmap 텐서를 전달
             )
             
             # 6. 컨트롤러 실행 결과 처리
@@ -333,3 +342,4 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+

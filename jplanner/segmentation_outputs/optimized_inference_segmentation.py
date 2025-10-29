@@ -71,8 +71,8 @@ class ReconstructionConfig:
     
     # --- 중요 ---
     # 사용자 정의 모델의 경로를 실제 파일 위치로 수정해야 합니다.
-    custom_object_model_path: str = "models/dynamic_object/best_model2.pth"
-    custom_surface_model_path: str = "models/surface/surface_mask_best_lrup.pt"
+    custom_object_model_path: str = "../models/dynamic_object/best_model2.pth"
+    custom_surface_model_path: str = "../models/surface/surface_mask_best_lrup.pt"
 
     segformer_checkpoint: str = "nvidia/segformer-b0-finetuned-cityscapes-1024-1024"
     maskformer_checkpoint: str = "facebook/mask2former-swin-tiny-cityscapes-semantic"
@@ -553,8 +553,8 @@ def main():
 
     # 처리할 모델 타입 리스트
     model_types_to_run = [
-        # "custom-object",
-        # "custom-surface",
+        "custom-object",
+        "custom-surface",
         "segformer-cityscapes",
         "maskformer-cityscapes"
     ]

@@ -52,7 +52,7 @@ class PointCloudBEVNode(Node):
         self.declare_parameter('bev.z_min', 0.1)       # BEV 높이 필터 최소값
         self.declare_parameter('bev.z_max', 1.0)        # BEV 높이 필터 최대값
         self.declare_parameter('bev.resolution', 0.05)   # BEV 그리드 해상도 (m/cell)
-        self.declare_parameter('bev.size_x', 40.0)      # BEV 맵 전체 X 크기 (m)
+        self.declare_parameter('bev.size_x', 30.0)      # BEV 맵 전체 X 크기 (m)
         self.declare_parameter('bev.size_y', 40.0)      # BEV 맵 전체 Y 크기 (m)
 
         # --- 3. 파라미터 값 할당 ---
@@ -85,7 +85,7 @@ class PointCloudBEVNode(Node):
         self.cells_x = int(self.size_x / self.resolution)
         self.cells_y = int(self.size_y / self.resolution)
         # start index  of bev map
-        self.grid_origin_x = -self.size_x / 2.0
+        self.grid_origin_x = 0.0  #-self.size_x / 2.0 # because bev frame is start from depth camera 
         self.grid_origin_y = -self.size_y / 2.0
 
         # --- 4. ROS 통신 설정 ---

@@ -23,6 +23,7 @@ from torch.cuda.amp import autocast
 from xconfig import ReconstructionConfig
 import cv2 
 import numpy as np
+import torch.nn.functional as F 
 
 class CustomSegFormer(nn.Module):
     """Custom trained SegFormer model"""
