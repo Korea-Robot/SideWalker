@@ -1,0 +1,101 @@
+# MPPI BEV Planner v1.0 Configuration File
+
+# 1. ROS Topics
+# ROS 통신 토픽 이름
+ros_topics:
+  bev_map_topic: '/bev_map'
+  cmd_vel_topic: '/mcu/command/manual_twist'
+  odom_topic: '/krm_auto_localization/odom'
+
+# 2. Robot Limits
+# 로봇의 물리적 한계
+robot_limits:
+  max_linear_velocity: 0.6
+  min_linear_velocity: 0.15
+  max_angular_velocity: 1.0
+
+# 3. Grid Map
+# BEV Costmap 설정
+grid_map:
+  resolution: 0.1
+  size_x: 40.0
+  size_y: 30.0
+  inflation_radius: 0.1
+
+# 4. Cost-Aware Subgoal Planner
+# 'planner.py'가 사용할 파라미터
+planner:
+  lookahead_distance: 7.0
+  goal_threshold: 0.5
+  num_subgoal_samples: 77
+  goal_cost_w: 1.0  # 서브골의 목표 근접성 가중치
+  obs_cost_w: 15.0   # 서브골의 장애물 회피 가중치
+
+# 5. MPPI Controller
+# 'optimized_controller.py'가 사용할 파라미터
+controller_mppi:
+  K: 1000  # 샘플 개수
+  T: 50   # 예측 시간 스텝
+  dt: 0.1  # 제어 주기 (runner.py의 control_timer와 일치해야 함)
+  lambda: 1.0
+  sigma_v: 0.1
+  sigma_w: 0.3
+  goal_cost_w: 95.0       # MPPI 목표 비용
+  obstacle_cost_w: 244.0  # MPPI 장애물 비용
+  control_cost_w: 0.1     # MPPI 제어 비용
+
+# 6. Safety Collision Checker
+# 'runner.py'의 비상 정지 기능
+safety_collision_checker:
+  check_distance: 0.5
+  check_width: 0.5
+  cost_threshold: 250.0
+
+# 7. Visualization
+visualization:
+  num_samples_to_plot: 50
+
+# 8. Waypoints
+# 주행할 글로벌 웨이포인트 목록 [x, y]
+waypoints:
+  # 1F loop
+  # - [-0.3, 1.88]
+  # - [5.58, 19.915]
+  # - [2.606, 36.25]
+  # - [-9.88, 38.336]
+  # - [-21.88, 29.57]
+  # - [-0.3, 1.88]
+
+  # 6F (필요시 주석 해제)
+  # - [-5.6, 0.48]
+  # - [-4.66, 7.05]
+  # - [2.844, 6.9]
+  # - [2.85, -0.68]
+  # - [-5.0, 0.132]
+
+
+    # 1029 6F
+  # - [0.09, -0.08]
+  # - [6.60, 0.84]
+  - [7.92, -7.85]
+  # - [0.74, -8.18]
+  - [0.09, -0.08]
+
+  # - [6.60, 0.84]
+  - [7.92, -7.85]
+  # - [0.74, -8.18]
+  - [0.09, -0.08]    
+
+  # - [6.60, 0.84]
+  - [7.92, -7.85]
+  # - [0.74, -8.18]
+  - [0.09, -0.08]    
+
+    # d1 = (0.09,-0.08)
+    # d2 = (6.60,0.84)
+    # d3 = (7.92,-7.85)
+    # d4 = (0.74,-8.18)
+    # d5 = d1
+
+
+    #     self.waypoints = [d1, d2, d3, d4, d5,d1]
