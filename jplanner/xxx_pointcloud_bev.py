@@ -276,8 +276,8 @@ class PointCloudBEVNode(Node):
 
         # 3. 유효한 포인트 필터링 (Z > 0)
         # 변환 후 z=0 (혹은 음수)가 된 포인트 제거
-        valid_mask = points[:, 2] > 0.01 # Z > 1cm
-        points = points[valid_mask]
+        # valid_mask = points[:, 2] > 0.01 # Z > 1cm
+        # points = points[valid_mask]
 
         # 4. GPU -> CPU 이동
         points_np = points.cpu().numpy()

@@ -90,7 +90,7 @@ class SemanticPointCloudBEVNode(Node):
 
         # Semantic BEV 파라미터
         self.declare_parameter('semantic_bev_topic', self.config.bev_topic)
-        self.declare_parameter('bev.z_min', -0.35)
+        self.declare_parameter('bev.z_min', -0.15)
         self.declare_parameter('bev.z_max', 1.0)
         self.declare_parameter('bev.resolution', 0.1)
         self.declare_parameter('bev.size_x', 30.0)
@@ -422,7 +422,7 @@ class SemanticPointCloudBEVNode(Node):
         labels_flat = labels.reshape(-1)
 
         # 3. 유효한 포인트 필터링 (Z > 0)
-        valid_mask = points_flat[:, 2] > 0.01 # Z > 1cm
+        valid_mask = points_flat[:, 2] > -0.45 # Z > 1cm
         
         points_valid = points_flat[valid_mask]
         colors_valid_bgr = colors_flat_bgr[valid_mask]

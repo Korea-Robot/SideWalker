@@ -36,15 +36,15 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # 🔄 3. 사용할 모델 타입 선택 (중요!)
 # 0: surface (로컬), 1: object (로컬), 2: ade20k (HF), 3: coco (HF)
 model_list = ['surface', 'object', 'ade20k', 'coco']
-MODEL_TYPE_INDEX = 1  # <--- 🚀 여기를 변경하여 모델 선택 (예: ade20k)
+MODEL_TYPE_INDEX = 0  # <--- 🚀 여기를 변경하여 모델 선택 (예: ade20k)
 MODEL_TYPE = model_list[MODEL_TYPE_INDEX]
 
 # 🗂️ 4. 선택된 모델에 따른 설정 (로컬 모델 경로)
 # (ade20k, coco는 이 경로를 사용하지 않고 HF에서 직접 다운로드)
 
 LOCAL_MODEL_PATHS = {
-    'surface': "models/surface/surface_mask_best_lrup.pt",
-    'object': "models/dynamic_object/best_model2.pth"
+    'surface': "../jplanner/models/surface/surface_mask_best_lrup.pt",
+    'object': "../jplanner/models/dynamic_object/best_model2.pth"
 }
 
 # 로컬 모델용 클래스 정보

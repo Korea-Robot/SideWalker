@@ -35,7 +35,7 @@ class DynamicsPredictor:
 
         # sim2real gap optimization parameter 
         linear_coeff = 1.0 
-        angular_coeff = 1.35 
+        angular_coeff = 1 # 1.35 
 
 
         x_next = states[:, 0] + v * torch.cos(yaw) * self.dt * linear_coeff

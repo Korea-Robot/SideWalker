@@ -101,21 +101,34 @@ class SemanticModel:
         """Load custom trained SegFormer"""
         self.model = CustomSegFormer(num_classes=self.config.num_custom_classes)
         try:
+            # checkpoint = torch.load(
+            #     self.config.custom_model_path,
+            #     map_location=self.device,
+            #     weights_only=False
+            # )
+            # # 체크포인트 키 이름 보정
+            # new_state_dict = {}
+            # for key, value in checkpoint.items():
+            #     if key.startswith('segformer.') or key.startswith('decode_head.'):
+            #         new_key = 'model.' + key
+            #     else:
+            #         new_key = key
+            #     new_state_dict[new_key] = value
+            
+            # self.model.load_state_dict(new_state_dict, strict=False)
+
             checkpoint = torch.load(
-                self.config.custom_model_path,
-                map_location=self.device,
+                self.config.custom_model_path, 
+                map_location=self.device, 
                 weights_only=False
             )
             # 체크포인트 키 이름 보정
             new_state_dict = {}
             for key, value in checkpoint.items():
-                if key.startswith('segformer.') or key.startswith('decode_head.'):
-                    new_key = 'model.' + key
-                else:
-                    new_key = key
+                new_key = 'original_model.' + key if key.startswith('segformer.') or key.startswith('decode_head.') else key
                 new_state_dict[new_key] = value
-            
             self.model.load_state_dict(new_state_dict, strict=False)
+
             self._log(f"✅ Custom model loaded from {self.config.custom_model_path}")
         except Exception as e:
             self._log(f"⚠️ Model loading failed: {e}")

@@ -46,10 +46,10 @@ class MPPIBevPlanner(Node):
 
         # --- 1. ROS 2 파라미터 선언 ---
         self.declare_parameter('grid_resolution', 0.1)
-        self.declare_parameter('grid_size_x', 40.0)
+        self.declare_parameter('grid_size_x', 50.0)
         self.declare_parameter('grid_size_y', 30.0)
         self.declare_parameter('inflation_radius', 0.1)
-        self.declare_parameter('max_linear_velocity', 0.6)
+        self.declare_parameter('max_linear_velocity', 0.9)
         self.declare_parameter('min_linear_velocity', 0.15)
         self.declare_parameter('max_angular_velocity', 1.0)
         self.declare_parameter('goal_threshold', 0.5)
@@ -181,6 +181,20 @@ class MPPIBevPlanner(Node):
         d7 = ( 39.79, 17.11)
         d8 = ( 21.21, 17.41)
         self.waypoints = [d3,d4, d5,d6,d7,d8,d3,d2]
+
+        d1  = ( 0.25,  -0.15 )  # start point 
+        d2  = ( 6.34,  -0.49 )  # water 
+        d3  = ( 7.70,  -31.28) # point  
+        d4  = ( 23.29, -33.32) # point 
+        d5  = ( 26.81, -67.15) # point 
+        d6  = ( 24.97, -75.54) # bolad
+        d7  = ( 27.03, -99.66) # sidewalk
+        d8  = ( 26.91, -99.65) # trafficlight
+        d9  = ( 33.53, -54.90) # to kenopi 
+        d10  = ( 41.29, -28.02) # kenopi
+
+        
+        self.waypoints = [d4,d3,d2,d1,d2,d3,d4, d5,d6,d7,d8,d9,d10]
 
         self.waypoint_index = 0
         
