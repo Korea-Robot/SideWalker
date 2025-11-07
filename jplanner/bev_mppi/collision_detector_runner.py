@@ -22,8 +22,7 @@ import torch
 
 # --- 모듈화된 코드 임포트 ---
 from optimized_controller import MPPIController
-# from visualizer import setup_visualization
-from bold_visualizer import setup_visualization
+from visualizer import setup_visualization
 # -----------------------------
 
 
