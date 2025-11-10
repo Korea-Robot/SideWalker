@@ -210,7 +210,7 @@ class MPPIBevPlanner(Node):
 
         self.waypoints = [d3,d2,d1,d2,d3,d4, d5,d6,d7,d8,d9,d10]
         # self.waypoints = [d1,d2,d3,d4, d5,d6,d7,d8,d9,d10]
-
+        self.waypoints = [d5,d6,d7,d8,d9,d10]
 
 
         self.waypoint_index = 0
@@ -373,7 +373,9 @@ class MPPIBevPlanner(Node):
             ]
             
             # 이 영역에 임계값을 넘는 셀이 하나라도 있는지 확인
-            if torch.any(danger_zone >= self.collision_cost_threshold):
+            danger_list = danger_zone >= self.collision_cost_threshold
+            if danger_list.sum() > 10:
+            # if torch.any(danger_zone >= self.collision_cost_threshold):
                 return True
                 
         except Exception as e:

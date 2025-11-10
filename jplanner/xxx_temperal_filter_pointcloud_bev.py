@@ -29,7 +29,7 @@ class PointCloudBEVNode(Node):
         self.declare_parameter('pcl.downsample_y', 3)
         self.declare_parameter('pcl.downsample_x', 2)
         self.declare_parameter('bev_topic', '/bev_map')
-        self.declare_parameter('bev.z_min', 0.1)
+        self.declare_parameter('bev.z_min', 0.25)
         self.declare_parameter('bev.z_max', 1.0)
         self.declare_parameter('bev.resolution', 0.05)
         self.declare_parameter('bev.size_x', 30.0)
@@ -38,11 +38,11 @@ class PointCloudBEVNode(Node):
 
         ### --- [NEW] 시간적 필터 파라미터 --- ###
         # 감쇠율 (0.0 ~ 1.0): 작을수록 과거 데이터가 빨리 사라짐 (반응성↑, 노이즈제거↓)
-        self.declare_parameter('bev.temporal.decay', 0.7) 
+        self.declare_parameter('bev.temporal.decay', 0.9) 
         # 증가율 (0.0 ~ 1.0): 클수록 새로운 장애물이 빨리 나타남
         self.declare_parameter('bev.temporal.increase', 0.6)
         # 임계값 (0.0 ~ 1.0): 이 확률 이상이어야 실제 장애물로 표시
-        self.declare_parameter('bev.temporal.threshold', 0.8)
+        self.declare_parameter('bev.temporal.threshold', 0.85)
         ##########################################
 
         # --- 파라미터 로드 ---

@@ -64,11 +64,11 @@ class ReconstructionConfig:
     # --- 모델 설정 ---
     use_semantic: bool = True
     # model_type: str ="maskformer-cityscapes" # "custom-object", "custom-surface", "segformer-cityscapes", "maskformer-cityscapes"
-    # model_type: str ="segformer-cityscapes"
-    model_type: str ="custom-object"
+    model_type: str ="segformer-cityscapes"
+    # model_type: str ="custom-object"
     # model_type: str ="custom-surface"
     custom_object_model_path: str = "./models/dynamic_object/best_model2.pth.pth"
-    custom_surface_model_path: str = "./models/surface/surface_mask_best_lrup.pt.pt"
+    custom_surface_model_path: str =  "./models/surface/surface_mask_best_lrup.pt.pt"
     segformer_checkpoint: str = "nvidia/segformer-b0-finetuned-cityscapes-1024-1024"
     maskformer_checkpoint: str = "facebook/mask2former-swin-tiny-cityscapes-semantic"
 
