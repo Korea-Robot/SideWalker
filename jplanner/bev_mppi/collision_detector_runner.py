@@ -47,12 +47,12 @@ class MPPIBevPlanner(Node):
         self.declare_parameter('grid_resolution', 0.1)
         self.declare_parameter('grid_size_x', 50.0)
         self.declare_parameter('grid_size_y', 30.0)
-        self.declare_parameter('inflation_radius', 0.1)
+        self.declare_parameter('inflation_radius', 0.2)
         self.declare_parameter('max_linear_velocity', 0.9)
         self.declare_parameter('min_linear_velocity', 0.15)
         self.declare_parameter('max_angular_velocity', 1.0)
         self.declare_parameter('goal_threshold', 0.5)
-        self.declare_parameter('mppi_k', 5000)
+        self.declare_parameter('mppi_k', 7000)
         self.declare_parameter('mppi_t', 40)
         self.declare_parameter('mppi_dt', 0.1)
         self.declare_parameter('mppi_lambda', 1.0)
@@ -194,6 +194,24 @@ class MPPIBevPlanner(Node):
 
         
         self.waypoints = [d4,d3,d2,d1,d2,d3,d4, d5,d6,d7,d8,d9,d10]
+        # self.waypoints = [d1,d2,d3,d4, d5,d6,d7,d8,d9,d10]
+
+
+        d1 = (0,0)         # start 
+        d2 = (4.46,0.26)   # point
+        d3 = (9.75,-30.78) # point
+        d4 = (24.16,-30.74) # point
+        d5 = (29.65,-97.64) # traffic light 
+        d6 = (32.42,-96.53) 
+        d7 = (61.57,-101.34) # forest enterance
+        d8 = (60.59,-67.95) # middle of forest
+        d9 = (53.99,-22.33) # end of forest
+        d10 = (32.87,-28.13)
+
+        self.waypoints = [d3,d2,d1,d2,d3,d4, d5,d6,d7,d8,d9,d10]
+        # self.waypoints = [d1,d2,d3,d4, d5,d6,d7,d8,d9,d10]
+
+
 
         self.waypoint_index = 0
         
