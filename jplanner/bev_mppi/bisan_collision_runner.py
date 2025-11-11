@@ -16,6 +16,11 @@ import threading
 # BEV Map 처리를 위해
 import sensor_msgs_py.point_cloud2 as pc2
 
+# --- (신규) 뎁스 카메라 및 CV Bridge ---
+from sensor_msgs.msg import Image
+import cv_bridge
+# ------------------------------------
+
 # --- MPPI 핵심 라이브러리 ---
 import torch
 # -------------------------
@@ -46,7 +51,7 @@ class MPPIBevPlanner(Node):
         # --- 1. ROS 2 파라미터 선언 ---
         self.declare_parameter('grid_resolution', 0.1)
         self.declare_parameter('grid_size_x', 50.0)
-        self.declare_parameter('grid_size_y', 40.0)
+        self.declare_parameter('grid_size_y', 30.0)
         self.declare_parameter('inflation_radius', 0.2)
         self.declare_parameter('max_linear_velocity', 0.9)
         self.declare_parameter('min_linear_velocity', 0.15)
@@ -63,10 +68,12 @@ class MPPIBevPlanner(Node):
         self.declare_parameter('control_cost_weight', 0.1)
         self.declare_parameter('num_samples_to_plot', 50)
 
-        # (신규) 충돌 감지기 파라미터
-        self.declare_parameter('collision_check_distance', 0.5) # [m] 로봇 전방 50cm
-        self.declare_parameter('collision_check_width', 0.25)    # [m] 로봇 좌우 25cm (총 50cm)
-        self.declare_parameter('collision_cost_threshold', 250.0) # 255에 가까우면 정지
+        # (신규) 충돌 감지기 파라미터 (Depth Camera 기반)
+        self.declare_parameter('depth_topic', '/camera/camera/depth/image_rect_raw') # 사용할 뎁스 카메라 토픽
+        self.declare_parameter('depth_collision_threshold', 0.5) # [m] 50cm
+        self.declare_parameter('depth_roi_width_percent', 0.4)   # 이미지 중앙 40% 폭
+        self.declare_parameter('depth_roi_height_percent', 0.4)  # 이미지 중앙 40% 높이
+        self.declare_parameter('depth_min_pixels_for_collision', 50) # 임계값 이하 픽셀이 50개 이상이면 정지
 
         # --- 2. 파라미터 값 가져오기 ---
         # (가독성을 위해 .get_parameter()...를 변수로 저장)
@@ -90,9 +97,11 @@ class MPPIBevPlanner(Node):
         self.num_samples_to_plot = self.get_parameter('num_samples_to_plot').get_parameter_value().integer_value
 
         # (신규) 충돌 감지기 파라미터 가져오기
-        self.collision_check_distance = self.get_parameter('collision_check_distance').get_parameter_value().double_value
-        self.collision_check_width = self.get_parameter('collision_check_width').get_parameter_value().double_value
-        self.collision_cost_threshold = self.get_parameter('collision_cost_threshold').get_parameter_value().double_value
+        self.depth_topic = self.get_parameter('depth_topic').get_parameter_value().string_value
+        self.depth_collision_threshold = self.get_parameter('depth_collision_threshold').get_parameter_value().double_value
+        self.depth_roi_width_p = self.get_parameter('depth_roi_width_percent').get_parameter_value().double_value
+        self.depth_roi_height_p = self.get_parameter('depth_roi_height_percent').get_parameter_value().double_value
+        self.min_pixels_for_collision = self.get_parameter('depth_min_pixels_for_collision').get_parameter_value().integer_value
 
         # --- 3. Grid 및 BEV 설정 ---
         self.cells_x = int(self.size_x / self.grid_resolution)
@@ -104,41 +113,26 @@ class MPPIBevPlanner(Node):
             cv2.MORPH_ELLIPSE, (2 * inflation_cells + 1, 2 * inflation_cells + 1)
         )
         
-        # (신규) 충돌 감지를 위한 그리드 셀 계산
-        # 로봇 (0,0)의 그리드 인덱스
-        self.robot_grid_c = int((0.0 - self.grid_origin_x) / self.grid_resolution)
-        self.robot_grid_r = int((0.0 - self.grid_origin_y) / self.grid_resolution)
+        # (제거됨) 기존 BEV 기반 충돌 감지 로직
         
-        # 확인할 거리/폭을 셀 개수로 변환
-        check_dist_cells = int(self.collision_check_distance / self.grid_resolution)
-        check_width_cells = int(self.collision_check_width / self.grid_resolution)
-        
-        # (신규) Costmap에서 확인할 영역(ROI)의 인덱스를 미리 계산 (클램핑 포함)
-        self.roi_r_start = max(0, self.robot_grid_r - check_width_cells // 2)
-        self.roi_r_end = min(self.cells_y, self.robot_grid_r + check_width_cells // 2)
-        self.roi_c_start = max(0, self.robot_grid_c) # 로봇 위치부터
-        self.roi_c_end = min(self.cells_x, self.robot_grid_c + check_dist_cells) # 전방으로
-
-        self.get_logger().info(
-            f"Collision checker ROI (grid indices):\n"
-            f"  Rows (width): {self.roi_r_start} to {self.roi_r_end}\n"
-            f"  Cols (dist):  {self.roi_c_start} to {self.roi_c_end}"
+        # --- 4. ROS2 Setup ---
+        self.bridge = cv_bridge.CvBridge() # (신규)
+        self.depth_sub = self.create_subscription( # (신규)
+            Image, self.depth_topic, self.depth_callback, 10
         )
-
-        
-        # --- 4. ROS2 Setup --- input : bev, odom => control
         self.bev_sub = self.create_subscription(
             PointCloud2, '/bev_map', self.bev_map_callback, 10)
-        
+        self.cmd_pub = self.create_publisher(Twist, '/mcu/command/manual_twist', 10)
         self.odom_sub = self.create_subscription(
             Odometry, '/krm_auto_localization/odom', self.odom_callback, 10)
-        
-        self.cmd_pub = self.create_publisher(Twist, '/mcu/command/manual_twist', 10)
 
         # --- 5. 상태 변수 ---
         self.current_pose = None    # [x, y, yaw] (글로벌 좌표계)
         self.costmap_tensor = None  # Costmap의 Torch 텐서 버전 (GPU 캐시용)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        self.imminent_collision_from_depth = False # (신규) 뎁스 콜백이 갱신
+        
         self.get_logger().info(f"Using device: {self.device}")
         
         # (신규) 충돌 상태
@@ -153,6 +147,7 @@ class MPPIBevPlanner(Node):
         d5 = (-5.0,0.132)
         # self.waypoints = [d1, d2, d3, d4,d5, d1,d2,d3, d4,d5, d1,d2,d3, d4,d5, d1,d2]
 
+
         # 1F loop
         d1 = (-0.3,1.88)
         d2 = (5.58,19.915)
@@ -166,6 +161,7 @@ class MPPIBevPlanner(Node):
         d3 = (7.92,-7.85)
         d4 = (0.74,-8.18)
         d5 = d1
+
 
         self.waypoints = [d1, d2, d3, d4, d5,d1]
 
@@ -211,7 +207,22 @@ class MPPIBevPlanner(Node):
         self.waypoints = [d3,d2,d1,d2,d3,d4, d5,d6,d7,d8,d9,d10]
         # self.waypoints = [d1,d2,d3,d4, d5,d6,d7,d8,d9,d10]
         self.waypoints = [d5,d6,d7,d8,d9,d10]
-        self.waypoints = [d4,d10,d9]*10
+
+        d1 = (1.0,1.0)         # start 
+        d2 = (4.46,0.26)   # point
+        d3 = (12.75,-30.78) # point
+        d4 = (24.16,-30.74) # point
+        d5 = (29.65,-97.64) # traffic light 
+        d6 = (32.42,-96.53) 
+        d7 = (61.57,-101.34) # forest enterance
+        d8 = (60.59,-67.95) # middle of forest
+        d9 = (53.99,-22.33) # end of forest
+        d10 = (32.87,-28.13)
+
+        self.waypoints = [d3,d2,d1,d2,d3,d4, d5,d6,d7,d8,d9,d10]*2
+        # self.waypoints = [d1,d2,d3,d4, d5,d6,d7,d8,d9,d10]
+        # self.waypoints = [d5,d6,d7,d8,d9,d10]
+        # self.waypoints = [d4,d10,d9]*10
 
         self.waypoint_index = 0
         
@@ -333,6 +344,66 @@ class MPPIBevPlanner(Node):
                 self.last_bev_map_callback_time_ms = (end_time - start_time) * 1000.0
 
 
+    # --- (신규) 뎁스 카메라 콜백 ---
+    
+    def depth_callback(self, msg: Image):
+        """
+        뎁스 카메라 이미지를 처리하여 즉각적인 충돌 위험을 감지합니다.
+        """
+        try:
+            # 1. ROS 이미지를 OpenCV(Numpy)로 변환
+            # 뎁스 인코딩이 '16UC1' (mm 단위) 또는 '32FC1' (m 단위)일 수 있음
+            if msg.encoding == '16UC1':
+                cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
+                # mm를 m 단위의 float로 변환
+                cv_image = cv_image.astype(np.float32) / 1000.0
+            elif msg.encoding == '32FC1':
+                cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
+            else:
+                self.get_logger().error(f"Unsupported depth encoding: {msg.encoding}", throttle_duration_sec=5.0)
+                return
+
+            # 2. 이미지 중앙의 ROI(관심 영역) 정의
+            h, w = cv_image.shape
+            roi_w = int(w * self.depth_roi_width_p)
+            roi_h = int(h * self.depth_roi_height_p)
+            
+            roi_x_start = (w - roi_w) // 2
+            roi_y_start = (h - roi_h) // 2
+            
+            depth_roi = cv_image[roi_y_start : roi_y_start + roi_h, 
+                                 roi_x_start : roi_x_start + roi_w]
+
+            # 3. ROI 내 유효한(nan/inf가 아닌) 픽셀만 필터링
+            valid_depths = depth_roi[np.isfinite(depth_roi) & (depth_roi > 0.01)] # 1cm 이상
+
+            if valid_depths.size == 0:
+                # ROI 내에 유효한 픽셀이 없음 (아마도 너무 멀거나 가까움)
+                with self.plot_data_lock:
+                    self.imminent_collision_from_depth = False
+                return
+
+            # 4. ★ 안전 로직 (평균 대신 '임계값 픽셀 카운트') ★
+            # 'depth_collision_threshold'보다 가까운 픽셀의 개수를 셉니다.
+            pixels_in_danger = valid_depths[valid_depths < self.depth_collision_threshold]
+            
+            collision = False
+            if pixels_in_danger.size > self.min_pixels_for_collision:
+                # 위험한 픽셀이 설정한 'min_pixels_for_collision' 개수보다 많으면 충돌로 간주
+                collision = True
+            
+            # 5. 스레드 안전하게 충돌 상태 업데이트
+            with self.plot_data_lock:
+                self.imminent_collision_from_depth = collision
+
+        except cv_bridge.CvBridgeError as e:
+            self.get_logger().error(f"CV Bridge error: {e}")
+        except Exception as e:
+            self.get_logger().error(f"Depth callback error: {e}\n{traceback.format_exc()}")
+            with self.plot_data_lock:
+                self.imminent_collision_from_depth = True # 에러 발생 시 안전을 위해 정지
+
+
     def world_to_grid_idx_numpy(self, x, y):
         grid_c = int((x - self.grid_origin_x) / self.grid_resolution)
         grid_r = int((y - self.grid_origin_y) / self.grid_resolution)
@@ -354,35 +425,24 @@ class MPPIBevPlanner(Node):
             self.latest_optimal_trajectory_local = np.array([])
             self.latest_sampled_trajectories_local = np.array([])
 
-    # --- (신규) 충돌 감지 함수 ---
+    # --- (신규) 충돌 감지 함수 (Depth 기반) ---
     
     def check_for_imminent_collision(self) -> bool:
         """
-        미리 계산된 ROI를 사용해 costmap_tensor에서 즉각적인 충돌을 확인합니다.
-        로봇 전방의 'danger_zone'에 임계값 이상의 장애물이 있는지 확인합니다.
+        뎁스 콜백이 설정한 플래그(self.imminent_collision_from_depth)를 확인합니다.
+        이 함수는 control_callback 스레드에서 호출됩니다.
         """
-        if self.costmap_tensor is None:
-            # self.get_logger().warn("Collision Check: Costmap not ready.", throttle_duration_sec=1.0)
-            return False # 맵이 없으면 일단 간다
-            
+        collision_detected = False
         try:
-            # 미리 계산된 ROI 인덱스를 사용하여 Costmap의 'danger zone'을 슬라이싱
-            danger_zone = self.costmap_tensor[
-                self.roi_r_start : self.roi_r_end,
-                self.roi_c_start : self.roi_c_end
-            ]
-            
-            # 이 영역에 임계값을 넘는 셀이 하나라도 있는지 확인
-            danger_list = danger_zone >= self.collision_cost_threshold
-            if danger_list.sum() > 8:
-            # if torch.any(danger_zone >= self.collision_cost_threshold):
-                return True
+            # depth_callback과 공유하는 변수를 스레드 안전하게 읽어옴
+            with self.plot_data_lock:
+                collision_detected = self.imminent_collision_from_depth
                 
         except Exception as e:
             self.get_logger().error(f"Collision check error: {e}\n{traceback.format_exc()}")
             return True # 에러 발생 시 안전을 위해 멈춤
             
-        return False
+        return collision_detected
 
     # --- 메인 제어 루프 ---
 
@@ -401,10 +461,10 @@ class MPPIBevPlanner(Node):
 
         try:
             # --- (신규) 0. 즉각적인 충돌 감지 ---
-            # MPPI 계산 전에 코스트맵을 기반으로 비상 정지 확인
+            # MPPI 계산 전에 뎁스 카메라 플래그를 기반으로 비상 정지 확인
             if self.check_for_imminent_collision():
                 if not self.collision_detected_last_step:
-                    self.get_logger().warn("🛑 IMMINENT COLLISION DETECTED! Stopping robot.")
+                    self.get_logger().warn("🛑 IMMINENT COLLISION DETECTED! (Depth) Stopping robot.")
                 
                 self.stop_robot()
                 with self.plot_data_lock:
@@ -539,5 +599,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-
-

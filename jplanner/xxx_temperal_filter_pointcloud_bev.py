@@ -26,13 +26,13 @@ class PointCloudBEVNode(Node):
         self.declare_parameter('cam.cy', 242.764)
         self.declare_parameter('cam.height', 480)
         self.declare_parameter('cam.width', 848)
-        self.declare_parameter('pcl.downsample_y', 3)
-        self.declare_parameter('pcl.downsample_x', 2)
+        self.declare_parameter('pcl.downsample_y', 6)
+        self.declare_parameter('pcl.downsample_x', 4)
         self.declare_parameter('bev_topic', '/bev_map')
-        self.declare_parameter('bev.z_min', 0.25)
+        self.declare_parameter('bev.z_min', -0.35)
         self.declare_parameter('bev.z_max', 1.0)
         self.declare_parameter('bev.resolution', 0.05)
-        self.declare_parameter('bev.size_x', 30.0)
+        self.declare_parameter('bev.size_x', 50.0) # 30
         self.declare_parameter('bev.size_y', 40.0)
         self.declare_parameter('bev.min_points_per_cell', 5) # 기존 밀도 필터
 
@@ -42,7 +42,7 @@ class PointCloudBEVNode(Node):
         # 증가율 (0.0 ~ 1.0): 클수록 새로운 장애물이 빨리 나타남
         self.declare_parameter('bev.temporal.increase', 0.6)
         # 임계값 (0.0 ~ 1.0): 이 확률 이상이어야 실제 장애물로 표시
-        self.declare_parameter('bev.temporal.threshold', 0.85)
+        self.declare_parameter('bev.temporal.threshold', 0.95)
         ##########################################
 
         # --- 파라미터 로드 ---
@@ -94,7 +94,7 @@ class PointCloudBEVNode(Node):
         self.get_logger().info(f'✅ Temporal Filter Active (Decay: {self.decay_rate}, Thresh: {self.occupancy_threshold})')
 
     def _init_gpu_parameters(self):
-        # ... (이전과 동일한 좌표계 파라미터들) ...
+        # GPU params for pointcloud transformation accelrating
         v, u = torch.meshgrid(torch.arange(self.cam_height, device=self.device, dtype=torch.float32), torch.arange(self.cam_width, device=self.device, dtype=torch.float32), indexing='ij')
         self.u_grid = u; self.v_grid = v
         self.fx_tensor = torch.tensor(self.fx, device=self.device, dtype=torch.float32)
@@ -121,35 +121,53 @@ class PointCloudBEVNode(Node):
         )
         #####################################################
 
-        self.transform_matrix = np.array([[0.,0.,1.,0.0], [-1.,0.,0.,0.], [0.,-1.,0.,0.], [0.,0.,0.,1.]], dtype=np.float32)
+        # camera frame to robot frame 3D transformation only Rotation : Homegeneuous coordinates
+        matrix = np.array(
+            [[0.,0.,1.,0.0], 
+             [-1.,0.,0.,0.], 
+             [0.,-1.,0.,0.], 
+             [0.,0.,0.,1.]], dtype=np.float32
+        )
+        
+        self.transform_matrix = torch.from_numpy(matrix).to(self.device, dtype=torch.float32)
 
     def depth_callback(self, msg):
-        # ... (동일) ...
+        # depth callback 
         try:
             depth_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding=msg.encoding).astype(np.float32) / 1000.0
-            depth_tensor = torch.from_numpy(depth_image).to(self.device)
+            # numpy.ndarray (480,848)
+            
+            depth_tensor = torch.from_numpy(depth_image).to(self.device) # using cuda!!!!!
+            # torch.Tensor (480,848) : only z value : depth image 
+            
             pointcloud_cam = self.depth_to_pointcloud_gpu(depth_tensor)
+            # torch.Tensor (480,848,3) : x,y,z value : point cloud
+            
             transformed_cloud = self.apply_transform_gpu(pointcloud_cam, self.transform_matrix)
+            # torch.Tensor (480,848,3 ) : extrinsic transformation : camera frame to robot frame : homogeneous coordinates transformation
+            
             stamp = msg.header.stamp
+            
             self.process_and_publish_pointcloud(transformed_cloud, stamp)
+            
             self.process_and_publish_bev(transformed_cloud, stamp)
         except Exception as e:
             self.get_logger().error(f'Error: {e}')
 
-    # ... (depth_to_pointcloud_gpu, apply_transform_gpu, process_and_publish_pointcloud 동일) ...
+    # (depth_to_pointcloud_gpu, apply_transform_gpu, process_and_publish_pointcloud 동일) 
     def depth_to_pointcloud_gpu(self, depth_tensor):
-        z = depth_tensor
-        x = (self.u_grid - self.cx_tensor) * z / self.fx_tensor
+        z = depth_tensor # depth value
+        x = (self.u_grid - self.cx_tensor) * z / self.fx_tensor # broadcasting!! + inverse intrinsic matrix 
         y = (self.v_grid - self.cy_tensor) * z / self.fy_tensor
         return torch.stack([x, y, z], dim=-1)
 
     def apply_transform_gpu(self, points, matrix):
         original_shape = points.shape
         points_flat = points.reshape(-1, 3)
-        matrix_tensor = torch.from_numpy(matrix).to(self.device, dtype=torch.float32)
+        
         ones = torch.ones((points_flat.shape[0], 1), device=self.device, dtype=torch.float32)
         homogeneous = torch.cat([points_flat, ones], dim=1)
-        transformed = torch.mm(homogeneous, matrix_tensor.T)
+        transformed = torch.mm(homogeneous, matrix.T)
         return transformed[:, :3].reshape(original_shape)
 
     def process_and_publish_pointcloud(self, transformed_cloud, stamp):
@@ -158,15 +176,18 @@ class PointCloudBEVNode(Node):
         points_np = points.cpu().numpy()
         if points_np.shape[0] == 0: return
         colors = np.zeros((points_np.shape[0], 3), dtype=np.uint8)
-        colors[:, 0] = 200; colors[:, 1] = 100; colors[:, 2] = 200
+        colors[:, 0] = 100; colors[:, 1] = 200; colors[:, 2] = 200
         self.pointcloud_pub.publish(self.create_pointcloud_msg(points_np, colors, stamp, self.target_frame))
 
+    # grid bev map
     def process_and_publish_bev(self, transformed_cloud, stamp):
         x_flat = transformed_cloud[..., 0].ravel()
         y_flat = transformed_cloud[..., 1].ravel()
         z_flat = transformed_cloud[..., 2].ravel()
 
         mask = (z_flat > self.z_min_t) & (z_flat < self.z_max_t)
+
+        # bev transformation
         grid_c = ((x_flat - self.grid_origin_x_t) / self.resolution_t).long()
         grid_r = ((y_flat - self.grid_origin_y_t) / self.resolution_t).long()
         mask &= (grid_c >= 0) & (grid_c < self.cells_x) & (grid_r >= 0) & (grid_r < self.cells_y)
